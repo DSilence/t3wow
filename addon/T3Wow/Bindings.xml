@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="T3WOW_TOGGLE" header="T3WOW" category="ADDONS">
+    T3Wow_Toggle()
+  </Binding>
+</Bindings>

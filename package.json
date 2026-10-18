@@ -1,0 +1,24 @@
+{
+  "name": "t3wow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "T3 Code for World of Warcraft: the addon's tests and tooling (the bridge is the Rust crate in bridge/)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test 'addon/test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit -p .",
+    "lint:lua": "node scripts/check-lua.ts",
+    "bridge:test": "cargo test --manifest-path bridge/Cargo.toml",
+    "bridge:build": "cargo build --release --manifest-path bridge/Cargo.toml"
+  },
+  "devDependencies": {
+    "@types/luaparse": "^0.2.13",
+    "@types/node": "^26.6.5",
+    "fengari": "^0.1.5",
+    "luaparse": "^0.3.1",
+    "typescript": "^7.0.2"
+  }
+}

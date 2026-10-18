@@ -1,0 +1,17 @@
+## Interface: 16001, 120100, 120001, 120000, 50504, 40402, 38002, 20506, 11509, 11508
+## Title: T3 Code
+## Notes: Talk to your T3 Code agents from inside the game. Needs the t3wow bridge running on this computer.
+## Author: t3wow
+## Version: 0.1.0
+## SavedVariables: T3WowDB
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+## AddonCompartmentFunc: T3Wow_Toggle
+
+Util.lua
+Markdown.lua
+Shot.lua
+Core.lua
+MessageView.lua
+UI.lua
+Notify.lua
+FastSend.lua
