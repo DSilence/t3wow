@@ -105,18 +105,23 @@ fn bridge_end_to_end() {
         let _stop = support::StopOnDrop(&stop);
 
         // Delivers queued messages once and publishes the reply with acks.
-        let inbox = wait_for("an inbox with the acknowledgement", || {
+        // Windows copies live slots after the inbox, so wait for those too.
+        let inbox = wait_for("an acknowledged snapshot in the inbox and every live slot", || {
             let text = read(&inbox_file);
-            (text.contains("Echo: hello from Azeroth") && text.contains("seq = 8,")).then_some(text)
+            if !text.contains("Echo: hello from Azeroth") || !text.contains("seq = 8,") {
+                return None;
+            }
+            let snapshot = text.replace("\"inbox\") end", "");
+            let slots_match = (1..=3).all(|slot| {
+                let live = read(&addons.join(live_slot_name(slot)).join("Data.lua"));
+                live.replace("\"live\") end", "") == snapshot
+            });
+            slots_match.then_some(text)
         });
         // Threads outside the hot set get a short preview.
         assert!(inbox.contains("partial = true"));
         assert!(inbox.contains("old note 12") && inbox.contains("old note 5"));
         assert!(!inbox.contains("old note 4,") && !inbox.contains("\"old note 4\""), "previews keep the last 8");
-        // Every live slot carries the same snapshot.
-        let live = read(&addons.join(live_slot_name(3)).join("Data.lua"));
-        assert_eq!(live.replace("\"live\") end", ""), inbox.replace("\"inbox\") end", ""));
-
         // Let several more polls run against the unchanged SavedVariables.
         std::thread::sleep(Duration::from_millis(400));
         {
