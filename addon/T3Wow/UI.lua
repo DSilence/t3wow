@@ -315,7 +315,6 @@ function T3:CreateMain(f)
 
   local title = main:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
   title:SetPoint("TOPLEFT", 2, -4)
-  title:SetPoint("RIGHT", -150, 0)
   title:SetJustifyH("LEFT")
   title:SetWordWrap(false)
   self.threadTitle = title
@@ -346,6 +345,17 @@ function T3:CreateMain(f)
   Tooltip(compact, "Compact", "Summarize the conversation to free up the model's context, like /compact in T3 Code. "
     .. "Runs after the current turn if the agent is working.")
   self.compactButton = compact
+
+  local settle = Button(main, "Settle", 70)
+  settle:SetScript("OnClick", function()
+    local threadId = T3WowDB.focus.threadId
+    if threadId then
+      self:Settle(threadId, not self:IsSettled(threadId))
+    end
+  end)
+  Tooltip(settle, "Settle", "Mark the thread done: it moves to the Settled list at the bottom of the project. "
+    .. "A running thread settles when its turn ends. Unsettle brings it back.")
+  self.settleButton = settle
 
   local box = Panel(main, 0.5)
   box:SetPoint("TOPLEFT", 0, -42)
@@ -571,7 +581,8 @@ function T3:Refresh()
 end
 
 function T3:RenderList()
-  local focus = T3WowDB.focus
+  local db = T3WowDB
+  local focus = db.focus
   local project = focus.projectId and self:Project(focus.projectId)
   local items = {}
   local now = time()
@@ -579,25 +590,52 @@ function T3:RenderList()
     self.navTitle:SetText(U.Escape(project.title))
     self.backButton:Show()
     self.newButton:SetShown(self:CanSend())
-    for _, thread in ipairs(project.threads or {}) do
+    local function threadItem(thread, settled)
       local label, color = U.Status(thread.status)
       local sub = U.Color(color, label) .. "  " .. U.Ago(now, thread.updatedAt)
+      if settled then
+        local ago = U.Ago(now, thread.settledAt or thread.updatedAt)
+        sub = U.Color("808080", ago == "" and "settled" or ago == "now" and "settled just now" or ("settled " .. ago .. " ago"))
+      end
       if thread.model and thread.model ~= "" then
         sub = sub .. "  " .. U.Escape(thread.model)
       end
-      if T3WowDB.unread[thread.id] then
+      if db.unread[thread.id] then
         sub = U.Color("ffd100", "new") .. "  " .. sub
       end
-      table.insert(items, {
+      return {
         title = U.Escape(thread.title),
         sub = sub,
-        color = color,
+        color = settled and "505060" or color,
+        dim = settled,
         selected = not self.composeNew and thread.id == focus.threadId,
         onClick = function()
           self.composeNew = false
           self:Select(project.id, thread.id)
         end,
+      }
+    end
+    local active, settled = self:ProjectThreads(project)
+    for _, thread in ipairs(active) do
+      table.insert(items, threadItem(thread, false))
+    end
+    if #settled > 0 then
+      db.ui.showSettled = db.ui.showSettled or {}
+      local open = db.ui.showSettled[project.id] or false
+      table.insert(items, {
+        title = U.Color("a0a0a0", (open and "- " or "+ ") .. "Settled (" .. #settled .. ")"),
+        sub = U.Color("606070", open and "Click to hide" or "Click to show threads marked done"),
+        color = "303040",
+        onClick = function()
+          db.ui.showSettled[project.id] = not open or nil
+          self:RenderList()
+        end,
       })
+      if open then
+        for _, thread in ipairs(settled) do
+          table.insert(items, threadItem(thread, true))
+        end
+      end
     end
   else
     self.navTitle:SetText("Projects")
@@ -640,6 +678,11 @@ function T3:RenderList()
   for index, item in ipairs(items) do
     local row = self:Row(index)
     row.title:SetText(item.title)
+    if item.dim then
+      row.title:SetTextColor(0.62, 0.62, 0.68)
+    else
+      row.title:SetTextColor(1, 1, 1)
+    end
     row.sub:SetText(item.sub)
     row.dot:SetColorTexture(hexToRGB(item.color))
     row.selected:SetShown(item.selected and true or false)
@@ -682,6 +725,7 @@ function T3:RenderThread()
   local canSend = self:CanSend()
   self.stopButton:Hide()
   self.compactButton:Hide()
+  self.settleButton:Hide()
   self.answerButton:Hide()
   self.sendButton:SetText("Send")
   self.question = nil
@@ -714,11 +758,16 @@ function T3:RenderThread()
     if thread and thread.branch then
       meta = meta .. "   " .. U.Color("a0a0a0", U.Escape(thread.branch))
     end
+    local settled = self:IsSettled(focus.threadId)
+    if settled then
+      meta = meta .. "   " .. U.Color("808080", "settled")
+    end
     self.threadMeta:SetText(meta)
     self.stopButton:SetShown(canSend and U.ACTIVE[status] or false)
-    self.compactButton:ClearAllPoints()
-    self.compactButton:SetPoint("TOPRIGHT", self.stopButton:IsShown() and -64 or 0, -2)
     self.compactButton:SetShown(canSend)
+    self.settleButton:SetText(settled and "Unsettle" or "Settle")
+    self.settleButton:SetWidth(settled and 80 or 70)
+    self.settleButton:SetShown(self:CanSettle())
     if thread then
       self:PruneAnswers(thread)
       local pending = self:PendingFor(focus.threadId)
@@ -746,6 +795,8 @@ function T3:RenderThread()
     end
     self:SetMessages(intro)
   end
+
+  self:LayoutThreadButtons()
 
   local composerEnabled = canSend and (self.composeNew or focus.threadId ~= nil)
   -- Only touch input when it changes: this runs on every data update, and
@@ -778,6 +829,27 @@ function T3:RenderThread()
     self.composer:SetText(key and db.drafts and db.drafts[key] or "")
   end
   self.placeholder:SetShown(self.composer:GetText() == "")
+end
+
+-- Line up the shown header buttons from the right; the title takes the rest.
+function T3:LayoutThreadButtons()
+  local x, leftmost = 0, nil
+  for _, button in ipairs({ self.stopButton, self.compactButton, self.settleButton }) do
+    if button:IsShown() then
+      button:ClearAllPoints()
+      button:SetPoint("TOPRIGHT", -x, -2)
+      x = x + button:GetWidth() + 4
+      leftmost = button
+    end
+  end
+  local title = self.threadTitle
+  title:ClearAllPoints()
+  title:SetPoint("TOPLEFT", 2, -4)
+  if leftmost then
+    title:SetPoint("RIGHT", leftmost, "LEFT", -8, 0)
+  else
+    title:SetPoint("RIGHT", -4, 0)
+  end
 end
 
 function T3:Submit(asAnswer)

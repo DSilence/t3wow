@@ -28,6 +28,11 @@ pub enum Command {
     Interrupt {
         thread_id: String,
     },
+    /// Settle a thread (`settled = false` brings it back to the active list).
+    Settle {
+        thread_id: String,
+        settled: bool,
+    },
     /// Answers keyed by question id: text, or a list of texts for a multi-select question.
     Answer {
         thread_id: String,
@@ -102,6 +107,9 @@ fn parse_command(raw: &Value) -> Option<OutboxCommand> {
             Command::Launch { project_id: str_of(&raw["projectId"])?, title, text, model: parse_model(&raw["model"]) }
         }
         "interrupt" => Command::Interrupt { thread_id: str_of(&raw["threadId"])? },
+        "settle" => {
+            Command::Settle { thread_id: str_of(&raw["threadId"])?, settled: raw["settled"].as_bool().unwrap_or(true) }
+        }
         "answer" => {
             let answers = raw["answers"]
                 .as_object()
@@ -220,6 +228,7 @@ T3WowDB = {
   ["model"] = { ["provider"] = "codex", ["model"] = "gpt-6-sol", ["effortKey"] = "reasoningEffort", ["effort"] = "high" } },
 { ["seq"] = 7, ["kind"] = "send", ["threadId"] = "t1", ["text"] = "hi" },
 { ["seq"] = 8, ["kind"] = "send", ["threadId"] = "t1" },
+{ ["seq"] = 11, ["kind"] = "settle", ["threadId"] = "t1", ["settled"] = false },
 { ["seq"] = 10, ["kind"] = "answer", ["threadId"] = "t1", ["requestId"] = "r1",
   ["answers"] = { ["q1"] = "Yes", ["q2"] = { "a", "b" }, ["q3"] = 5 } },
 },
@@ -229,7 +238,12 @@ T3WowDB = {
 "#;
         let state = parse_addon_state(Path::new("x"), source, SystemTime::UNIX_EPOCH).unwrap().unwrap();
         assert_eq!(state.instance_id, "inst-1");
-        assert_eq!(state.outbox.iter().map(|c| c.seq).collect::<Vec<_>>(), [7, 9, 10], "invalid commands are dropped");
+        assert_eq!(
+            state.outbox.iter().map(|c| c.seq).collect::<Vec<_>>(),
+            [7, 9, 10, 11],
+            "invalid commands are dropped"
+        );
+        assert_eq!(state.outbox[3].command, Command::Settle { thread_id: "t1".into(), settled: false });
         assert_eq!(
             state.outbox[0].command,
             Command::Send { thread_id: "t1".into(), text: "hi".into(), mode: "auto".into(), model: None }

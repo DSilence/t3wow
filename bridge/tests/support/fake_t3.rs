@@ -21,6 +21,7 @@ const TOOLS: &[&str] = &[
     "orchestrator_capabilities",
     "t3_thread_configuration",
     "t3_thread_configure",
+    "t3_thread_organize",
 ];
 
 pub struct Item {
@@ -38,6 +39,7 @@ pub struct Thread {
     pub items: Vec<Item>,
     pub updated: u64,
     pub model_selection: Value,
+    pub settled: bool,
 }
 
 #[derive(Default)]
@@ -63,6 +65,7 @@ impl State {
             items: Vec::new(),
             updated: 0,
             model_selection: json!({ "instanceId": "claudeAgent", "model": "claude-opus-5-5" }),
+            settled: false,
         };
         self.threads.insert(thread_id.into(), thread);
         for (kind, text) in items {
@@ -98,7 +101,8 @@ impl State {
             "model": "claude-opus-5-5",
             "runtimeMode": "full-access",
             "interactionMode": "default",
-            "settled": false,
+            "settled": t.settled,
+            "settledAt": if t.settled { json!(iso(t.updated)) } else { Value::Null },
             "snoozed": false,
             "parentThreadId": null,
             "itemCount": t.items.len(),
@@ -120,8 +124,13 @@ impl State {
             "t3_project_list" => Ok(json!({ "projects": [project], "nextCursor": null })),
             "t3_project_read" => Ok(project),
             "t3_thread_list" => {
-                let threads: Vec<Value> =
-                    self.threads.values().filter(|t| args["projectId"] == t.project_id).map(Self::list_item).collect();
+                let threads: Vec<Value> = self
+                    .threads
+                    .values()
+                    .filter(|t| args["projectId"] == t.project_id)
+                    .filter(|t| args["settled"].as_bool().is_none_or(|settled| settled == t.settled))
+                    .map(Self::list_item)
+                    .collect();
                 Ok(
                     json!({ "projectId": args["projectId"], "threads": threads, "nextCursor": null, "total": threads.len() }),
                 )
@@ -217,6 +226,23 @@ impl State {
                         t.model_selection = args["modelSelection"].clone();
                         t.updated = clock;
                         Ok(json!({ "threadId": t.thread_id, "modelSelection": t.model_selection }))
+                    }
+                    None => failure("thread_not_found", "No such thread"),
+                }
+            }
+            "t3_thread_organize" => {
+                self.clock += 1;
+                let clock = self.clock;
+                let settled = match args["action"].as_str() {
+                    Some("settle") => true,
+                    Some("unsettle") => false,
+                    _ => return Err(None),
+                };
+                match self.threads.get_mut(args["threadId"].as_str().unwrap_or_default()) {
+                    Some(t) => {
+                        t.settled = settled;
+                        t.updated = clock;
+                        Ok(json!({ "threadId": t.thread_id, "action": args["action"] }))
                     }
                     None => failure("thread_not_found", "No such thread"),
                 }

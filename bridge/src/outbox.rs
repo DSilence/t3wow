@@ -107,6 +107,7 @@ fn kind(command: &Command) -> &'static str {
         Command::Send { .. } => "send",
         Command::Launch { .. } => "launch",
         Command::Interrupt { .. } => "interrupt",
+        Command::Settle { .. } => "settle",
         Command::Answer { .. } => "answer",
     }
 }
@@ -135,6 +136,10 @@ fn execute(client: &mut T3Client, instance_id: &str, command: &OutboxCommand) ->
         Command::Interrupt { thread_id } => {
             let status = client.interrupt_thread(thread_id, &request_id)?;
             done(if status == "interrupt_requested" { "Stopping" } else { "Nothing to stop" }, thread_id)
+        }
+        Command::Settle { thread_id, settled } => {
+            client.settle_thread(thread_id, *settled)?;
+            done(if *settled { "Settled" } else { "Back in the thread list" }, thread_id)
         }
         Command::Answer { thread_id, request_id: question_id, answers } => {
             client.answer_question(thread_id, question_id, answers)?;

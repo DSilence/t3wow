@@ -141,6 +141,8 @@ pub struct ThreadListItem {
     pub parent_thread_id: Option<String>,
     pub item_count: i64,
     pub updated_at: String,
+    pub settled: bool,
+    pub settled_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -266,14 +268,27 @@ impl T3Client {
         Ok(projects)
     }
 
-    pub fn list_threads(&mut self, project_id: &str, limit: usize) -> Result<Vec<ThreadListItem>> {
+    /// A project's threads, newest first: the active ones, or the settled ones.
+    pub fn list_threads(&mut self, project_id: &str, limit: usize, settled: bool) -> Result<Vec<ThreadListItem>> {
         #[derive(Deserialize)]
         struct Page {
             threads: Vec<ThreadListItem>,
         }
         let page: Page =
-            self.call("t3_thread_list", json!({ "projectId": project_id, "settled": false, "limit": limit }))?;
+            self.call("t3_thread_list", json!({ "projectId": project_id, "settled": settled, "limit": limit }))?;
         Ok(page.threads)
+    }
+
+    /// Settling needs `t3_thread_organize` (newer environments, operate grants).
+    pub fn can_settle(&self) -> bool {
+        self.tools.contains("t3_thread_organize")
+    }
+
+    /// Settle a thread (T3 applies it when a running turn ends), or bring it back.
+    pub fn settle_thread(&mut self, thread_id: &str, settled: bool) -> Result<()> {
+        let action = if settled { "settle" } else { "unsettle" };
+        let _: Value = self.call("t3_thread_organize", json!({ "threadId": thread_id, "action": action }))?;
+        Ok(())
     }
 
     pub fn read_thread(&mut self, thread_id: &str, options: ReadOptions) -> Result<ThreadReadResult> {
@@ -327,7 +342,7 @@ impl T3Client {
         } else {
             let project: Project = self.call("t3_project_read", json!({ "projectId": project_id }))?;
             if project.default_model_selection.is_none() {
-                let threads = self.list_threads(project_id, 1)?;
+                let threads = self.list_threads(project_id, 1, false)?;
                 let Some(latest) = threads.first() else {
                     return Err(Error::Tool {
                         tool: "t3_thread_launch".into(),

@@ -134,6 +134,8 @@ function U.ThreadEntries(thread, pending, results, answering)
       add("note", U.Color("a0a0a0", U.Escape(command.text or command.preview or "")))
     elseif command.kind == "interrupt" then
       add("note", U.Color("808080", "Stop requested (waiting for the bridge)"))
+    elseif command.kind == "settle" then
+      add("note", U.Color("808080", (command.settled and "Settle" or "Unsettle") .. " requested (waiting for the bridge)"))
     end
   end
   for _, result in ipairs(results or {}) do

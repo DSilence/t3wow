@@ -144,9 +144,13 @@ Key Bindings > AddOns.
 - **Left:** projects, then that project's threads (status dot, age, model).
   Use **+ New** (in a project or on the project list) to start a thread; the
   **project** button next to the model picks where it runs. The first line of
-  your message becomes its title.
+  your message becomes its title. Settled threads sit in a collapsed
+  **Settled** section at the bottom of the project; click it to show them.
 - **Header:** **Compact** summarizes the conversation to free the model's
   context, like `/compact` in T3 Code (it waits for a running turn).
+  **Settle** marks the thread done and moves it to the Settled section (a
+  running thread settles when its turn ends); **Unsettle** brings it back.
+  Needs a T3 Code environment that offers settling.
 - **Right:** the conversation, with Markdown rendered: headings, lists, quotes,
   code blocks and tables (in a bundled monospace font), bold, italics, inline
   code and links. **Copy** next to a message opens its text for Ctrl+C;
@@ -181,7 +185,8 @@ even with the window closed, so this works in the background. Threads that
 finished during a reload are noticed too. Finished threads you have not opened
 are marked **new** in the list.
 
-Slash commands: `/t3 sync`, `/t3 reload`, `/t3 send <text>`, `/t3 compact`, `/t3 status`,
+Slash commands: `/t3 sync`, `/t3 reload`, `/t3 send <text>`, `/t3 compact`,
+`/t3 settle`, `/t3 unsettle`, `/t3 status`,
 `/t3 autoreload on|off` (queue several messages and send them together),
 `/t3 interval <sec>`, `/t3 font <size>`, `/t3 notify on|off`,
 `/t3 sound on|off`, `/t3 minimap on|off`, `/t3 fastsend on|off`, `/t3 clear`,

@@ -198,15 +198,71 @@ function T3:Thread(threadId)
   return threadId and self.snapshot and self.snapshot.threads and self.snapshot.threads[threadId]
 end
 
--- The list entry for a thread, which exists even when its messages were not synced.
+-- The list entry for a thread, which exists even when its messages were not
+-- synced, its project, and whether the bridge lists it as settled.
 function T3:ThreadSummary(threadId)
   for _, project in ipairs(self.snapshot and self.snapshot.projects or {}) do
     for _, thread in ipairs(project.threads or {}) do
       if thread.id == threadId then
-        return thread, project
+        return thread, project, false
+      end
+    end
+    for _, thread in ipairs(project.settled or {}) do
+      if thread.id == threadId then
+        return thread, project, true
       end
     end
   end
+end
+
+-- The latest settle or unsettle waiting in the outbox for a thread: true, false or nil.
+function T3:PendingSettle(threadId)
+  local settled
+  for _, command in ipairs(T3WowDB.outbox) do
+    if command.kind == "settle" and command.threadId == threadId then
+      settled = command.settled
+    end
+  end
+  return settled
+end
+
+-- Whether a thread is settled, counting a settle the bridge has not done yet.
+function T3:IsSettled(threadId)
+  local pending = self:PendingSettle(threadId)
+  if pending ~= nil then
+    return pending
+  end
+  local _, _, settled = self:ThreadSummary(threadId)
+  return settled or false
+end
+
+-- A project's threads split as the player should see them: settles still in
+-- the outbox already move threads between the active and settled lists.
+function T3:ProjectThreads(project)
+  local active, settled = {}, {}
+  local function place(thread, wasSettled)
+    local pending = self:PendingSettle(thread.id)
+    local isSettled = pending == nil and wasSettled or pending == true
+    table.insert(isSettled and settled or active, thread)
+  end
+  for _, thread in ipairs(project.threads or {}) do
+    place(thread, false)
+  end
+  for _, thread in ipairs(project.settled or {}) do
+    place(thread, true)
+  end
+  local function newestBy(field)
+    return function(a, b)
+      local x, y = a[field] or a.updatedAt or 0, b[field] or b.updatedAt or 0
+      if x ~= y then
+        return x > y
+      end
+      return a.id < b.id
+    end
+  end
+  table.sort(active, newestBy("updatedAt"))
+  table.sort(settled, newestBy("settledAt"))
+  return active, settled
 end
 
 function T3:BridgeState()
@@ -311,6 +367,12 @@ end
 function T3:CanSend()
   local bridge = self.snapshot and self.snapshot.bridge
   return not bridge or bridge.canOperate ~= false
+end
+
+-- Older environments have no settle tool; snapshots from older bridges say nothing.
+function T3:CanSettle()
+  local bridge = self.snapshot and self.snapshot.bridge
+  return bridge ~= nil and bridge.canSettle == true
 end
 
 function T3:Enqueue(command)
@@ -441,6 +503,19 @@ end
 
 function T3:Interrupt(threadId)
   return self:Enqueue({ kind = "interrupt", threadId = threadId })
+end
+
+-- Settle a thread (T3 does it when a running turn ends), or bring it back.
+function T3:Settle(threadId, settled)
+  settled = settled ~= false
+  local _, project = self:ThreadSummary(threadId)
+  local projectId = project and project.id or T3WowDB.focus.projectId
+  if settled and projectId then
+    -- Keep the thread in sight in the expanded Settled section.
+    T3WowDB.ui.showSettled = T3WowDB.ui.showSettled or {}
+    T3WowDB.ui.showSettled[projectId] = true
+  end
+  return self:Enqueue({ kind = "settle", threadId = threadId, settled = settled })
 end
 
 -- T3 compacts the conversation when a message is exactly "/compact". Queued,
@@ -677,6 +752,15 @@ SlashCmdList.T3WOW = function(input)
     else
       T3:Print("Open a thread first.")
     end
+  elseif command == "settle" or command == "unsettle" then
+    local threadId = T3WowDB.focus.threadId
+    if not threadId then
+      T3:Print("Open a thread first.")
+    elseif not T3:CanSettle() then
+      T3:Print("Settling needs a newer T3 Code environment and bridge.")
+    else
+      T3:Settle(threadId, command == "settle")
+    end
   elseif command == "notify" or command == "sound" then
     settings[command] = rest ~= "off"
     T3:Print((command == "notify" and "Notifications when a thread finishes: " or "Notification sound: ")
@@ -699,6 +783,6 @@ SlashCmdList.T3WOW = function(input)
     T3:Print(string.format("bridge %s%s, live updates left %d/%d, unsent %d", state,
       message and (": " .. message) or "", T3:LiveRemaining(), T3.liveSlots, #T3WowDB.outbox))
   else
-    T3:Print("/t3 - toggle window | /t3 sync | /t3 reload | /t3 send <text> | /t3 compact | /t3 status | /t3 autoreload on|off | /t3 interval <sec> | /t3 font <size> | /t3 notify on|off | /t3 sound on|off | /t3 minimap on|off | /t3 fastsend on|off | /t3 clear | /t3 reset")
+    T3:Print("/t3 - toggle window | /t3 sync | /t3 reload | /t3 send <text> | /t3 compact | /t3 settle | /t3 unsettle | /t3 status | /t3 autoreload on|off | /t3 interval <sec> | /t3 font <size> | /t3 notify on|off | /t3 sound on|off | /t3 minimap on|off | /t3 fastsend on|off | /t3 clear | /t3 reset")
   end
 end

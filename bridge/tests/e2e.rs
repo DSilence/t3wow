@@ -215,6 +215,27 @@ fn bridge_end_to_end() {
             fs::read_dir(&shots_dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(left, ["WoWScrnShot_own.jpg"], "data screenshots are deleted, the player's own kept");
 
+        // Settling moves a thread to the project's settled list.
+        fs::write(
+            &sv_file,
+            saved_variables(r#"{ ["seq"] = 11, ["kind"] = "settle", ["threadId"] = "t1", ["settled"] = true },"#),
+        )
+        .unwrap();
+        wait_for("the settled thread", || read(&inbox_file).contains("seq = 11,").then_some(()));
+        assert!(t3.state.lock().unwrap().threads["t1"].settled);
+        let vm = AddonVm::load(&read(&sv_file));
+        vm.run_addon_file(&read(&inbox_file), "T3Wow_Inbox/Data.lua");
+        vm.run(r#"__stub.fire("ADDON_LOADED", "T3Wow"); __stub.fire("PLAYER_LOGIN")"#);
+        assert_eq!(vm.string("T3Wow.snapshot.projects[1].settled[1].id"), "t1");
+        assert!(vm.number("T3Wow.snapshot.projects[1].settled[1].settledAt") > 0.0);
+        assert_eq!(vm.string("tostring(T3Wow.snapshot.bridge.canSettle)"), "true");
+        assert_eq!(vm.string("tostring(T3Wow:IsSettled('t1'))"), "true");
+        let active = vm.string(
+            "(function() local ids = {} for _, t in ipairs(T3Wow.snapshot.projects[1].threads) do ids[#ids + 1] = t.id end return table.concat(ids, ',') end)()",
+        );
+        assert!(!active.split(',').any(|id| id == "t1"), "{active}");
+        assert!(read(&inbox_file).contains("Echo: sent by screenshot"), "the open settled thread keeps its messages");
+
         stop.store(true, Ordering::Relaxed);
         bridge.join().unwrap().unwrap();
     });

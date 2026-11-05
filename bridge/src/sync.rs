@@ -23,6 +23,9 @@ const FULL_LIST_REFRESH_SECS: u64 = 10;
 const INITIAL_WINDOW: i64 = 200;
 const MAX_HOT_THREADS: usize = 12;
 const CATALOG_REFRESH_SECS: u64 = 300;
+/// Settled threads rarely change, so their lists refresh less often (and right after a settle).
+const SETTLED_REFRESH_SECS: u64 = 30;
+const SETTLED_PER_PROJECT: usize = 15;
 /// Threads outside the hot set get a short preview, so opening them in game
 /// shows something without a reload to tell the bridge.
 const MAX_PREVIEWS: usize = 16;
@@ -101,6 +104,10 @@ pub struct SyncEngine {
     projects_at: Option<Instant>,
     lists: HashMap<String, Vec<ThreadListItem>>,
     lists_at: Option<Instant>,
+    /// Settled threads per project, shown in their own section in game.
+    settled: HashMap<String, Vec<ThreadListItem>>,
+    settled_at: Option<Instant>,
+    can_settle: bool,
     threads: HashMap<String, ThreadCache>,
     previews: HashMap<String, Preview>,
     catalog: Vec<CatalogProvider>,
@@ -118,6 +125,9 @@ impl SyncEngine {
             projects_at: None,
             lists: HashMap::new(),
             lists_at: None,
+            settled: HashMap::new(),
+            settled_at: None,
+            can_settle: false,
             threads: HashMap::new(),
             previews: HashMap::new(),
             catalog: Vec::new(),
@@ -171,19 +181,33 @@ impl SyncEngine {
                     continue;
                 }
             }
-            let threads = client.list_threads(&project.id, self.config.threads_per_project)?;
+            let threads = client.list_threads(&project.id, self.config.threads_per_project, false)?;
             self.lists.insert(project.id.clone(), threads);
         }
         if full_refresh {
             self.lists_at = Some(Instant::now());
         }
         self.lists.retain(|id, _| projects.iter().any(|p| p.id == *id));
+        self.can_settle = client.can_settle();
+        let settled_due = stale(self.settled_at, SETTLED_REFRESH_SECS) || !self.forced.is_empty();
+        for project in &projects {
+            if settled_due || !self.settled.contains_key(&project.id) {
+                let threads = client.list_threads(&project.id, SETTLED_PER_PROJECT, true)?;
+                self.settled.insert(project.id.clone(), threads);
+            }
+        }
+        if settled_due {
+            self.settled_at = Some(Instant::now());
+        }
+        self.settled.retain(|id, _| projects.iter().any(|p| p.id == *id));
 
         let listed: HashMap<String, ThreadListItem> =
             self.lists.values().flatten().map(|t| (t.thread_id.clone(), t.clone())).collect();
         let hot = self.hot_thread_ids(states, &listed);
         for thread_id in &hot {
-            self.refresh_thread(client, thread_id, listed.get(thread_id))?;
+            // A settled thread opened in game is followed like any other.
+            let item = listed.get(thread_id).or_else(|| self.settled_item(thread_id)).cloned();
+            self.refresh_thread(client, thread_id, item.as_ref())?;
         }
         self.threads.retain(|id, _| hot.contains(id));
         let previews = self.preview_thread_ids(&hot);
@@ -195,6 +219,10 @@ impl SyncEngine {
         self.previews.retain(|id, _| previews.contains(id));
         self.forced.clear();
         Ok(())
+    }
+
+    fn settled_item(&self, thread_id: &str) -> Option<&ThreadListItem> {
+        self.settled.values().flatten().find(|t| t.thread_id == thread_id)
     }
 
     /// Listed threads that are not hot: the focused projects' first, then the most recent.
@@ -386,21 +414,8 @@ impl SyncEngine {
             .iter()
             .filter_map(|p| {
                 let list = self.lists.get(&p.id)?;
-                let threads: Vec<Value> = list
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "id": t.thread_id,
-                            "title": t.title,
-                            "status": t.status,
-                            "updatedAt": unix_seconds(&t.updated_at),
-                            "model": t.model,
-                            "provider": t.provider_instance_id,
-                            "mode": t.runtime_mode,
-                            "parentId": t.parent_thread_id,
-                        })
-                    })
-                    .collect();
+                let threads: Vec<Value> = list.iter().map(list_item_json).collect();
+                let settled: Vec<Value> = self.settled.get(&p.id).into_iter().flatten().map(list_item_json).collect();
                 let default_model =
                     p.default_model_selection.as_ref().map(|m| json!({ "provider": m.instance_id, "model": m.model }));
                 Some(json!({
@@ -409,6 +424,7 @@ impl SyncEngine {
                     "root": p.workspace_root,
                     "defaultModel": default_model,
                     "threads": threads,
+                    "settled": settled,
                 }))
             })
             .collect();
@@ -501,6 +517,7 @@ impl SyncEngine {
                 "message": bridge.message,
                 "server": bridge.server,
                 "canOperate": bridge.can_operate,
+                "canSettle": bridge.can_operate && self.can_settle,
                 // Reads commands from screenshots (addon/T3Wow/FastSend.lua).
                 "shots": true,
                 "active": self.active(),
@@ -511,6 +528,23 @@ impl SyncEngine {
             "models": self.catalog.iter().map(catalog_json).collect::<Vec<_>>(),
         })
     }
+}
+
+fn list_item_json(t: &ThreadListItem) -> Value {
+    let mut item = json!({
+        "id": t.thread_id,
+        "title": t.title,
+        "status": t.status,
+        "updatedAt": unix_seconds(&t.updated_at),
+        "model": t.model,
+        "provider": t.provider_instance_id,
+        "mode": t.runtime_mode,
+        "parentId": t.parent_thread_id,
+    });
+    if let Some(at) = t.settled_at.as_deref().filter(|_| t.settled) {
+        item["settledAt"] = json!(unix_seconds(at));
+    }
+    item
 }
 
 fn message_json(item: &TimelineItem) -> Value {

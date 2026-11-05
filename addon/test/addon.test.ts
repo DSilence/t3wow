@@ -445,6 +445,78 @@ describe("sync and models", () => {
   });
 });
 
+describe("settling", () => {
+  const SETTLED_PROJECTS: LuaValue = [
+    {
+      id: "p1",
+      title: "Game | Tools",
+      threads: [
+        { id: "t1", title: "Fix the | pipe", status: "running", updatedAt: NOW - 30, model: "claude-opus-5-5", provider: "claudeAgent" },
+        { id: "t2", title: "Older", status: "completed", updatedAt: NOW - 7200 },
+      ],
+      settled: [
+        { id: "t3", title: "Shipped", status: "completed", updatedAt: NOW - 600, settledAt: NOW - 600 },
+        { id: "t4", title: "Long done", status: "completed", updatedAt: NOW - 90000, settledAt: NOW - 90000 },
+      ],
+    },
+  ];
+  const withSettle = (canSettle = true) =>
+    snapshot({
+      projects: SETTLED_PROJECTS,
+      threads: THREADS,
+      bridge: { status: "ok", server: "env.example", canOperate: true, canSettle },
+    });
+  const rowTitles = (vm: LuaVM) =>
+    (vm.run(`local t = {} for _, r in ipairs(T3Wow.rows) do if r:IsShown() then t[#t + 1] = r.title:GetText() end end
+      return table.concat(t, "\\n")`) as string).split("\n");
+
+  it("lists settled threads in a section that opens on click", () => {
+    const vm = boot({ inbox: withSettle() });
+    vm.run(`T3Wow:Toggle(); T3Wow:Select("p1", nil)`);
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "Older", "|cffa0a0a0+ Settled (2)|r"]);
+    vm.run(`T3Wow.rows[3]:Click()`);
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "Older", "|cffa0a0a0- Settled (2)|r", "Shipped", "Long done"]);
+    assert.match(vm.run(`return T3Wow.rows[4].sub:GetText()`) as string, /settled 10m ago/);
+    // Settled threads open like any other.
+    vm.run(`T3Wow.rows[4]:Click()`);
+    assert.equal(vm.run(`return T3WowDB.focus.threadId`), "t3");
+    assert.equal(vm.run(`return T3Wow.settleButton:GetText()`), "Unsettle");
+    assert.match(vm.run(`return T3Wow.threadMeta:GetText()`) as string, /settled/);
+    // The section stays open across reloads.
+    assert.equal(vm.run(`return T3WowDB.ui.showSettled.p1`), true);
+  });
+
+  it("settles the open thread and moves it before the bridge confirms", () => {
+    const vm = boot({ inbox: withSettle() });
+    vm.run(`T3Wow:Toggle(); T3Wow:Select("p1", "t1")`);
+    assert.equal(vm.run(`return T3Wow.settleButton:IsShown()`), true);
+    assert.equal(vm.run(`return T3Wow.settleButton:GetText()`), "Settle");
+    vm.run(`T3Wow.settleButton:Click()`);
+    assert.equal(vm.run(`local c = T3WowDB.outbox[1]; return c.kind .. ":" .. c.threadId .. ":" .. tostring(c.settled)`),
+      "settle:t1:true");
+    assert.equal(vm.run(`return __stub.reloads`), 1);
+    assert.deepEqual(rowTitles(vm), ["Older", "|cffa0a0a0- Settled (3)|r", "Fix the || pipe", "Shipped", "Long done"]);
+    assert.equal(vm.run(`return T3Wow.settleButton:GetText()`), "Unsettle");
+    assert.match(vm.run(`return T3Wow:MessagesText()`) as string, /Settle requested/);
+  });
+
+  it("unsettles a thread back into the list", () => {
+    const vm = boot({ inbox: withSettle() });
+    vm.run(`T3Wow:Toggle(); T3Wow:Select("p1", "t4")`);
+    vm.run(`SlashCmdList.T3WOW("unsettle")`);
+    assert.equal(vm.run(`local c = T3WowDB.outbox[1]; return c.kind .. ":" .. tostring(c.settled)`), "settle:false");
+    assert.deepEqual(rowTitles(vm).slice(0, 3), ["Fix the || pipe", "Older", "Long done"]);
+  });
+
+  it("hides Settle when the environment cannot settle", () => {
+    const vm = boot({ inbox: withSettle(false) });
+    vm.run(`T3Wow:Toggle(); T3Wow:Select("p1", "t1")`);
+    assert.equal(vm.run(`return T3Wow.settleButton:IsShown()`), false);
+    vm.run(`SlashCmdList.T3WOW("settle")`);
+    assert.equal(vm.run(`return #T3WowDB.outbox`), 0);
+  });
+});
+
 describe("notifications", () => {
   const finished = (status = "completed") =>
     snapshot({ projects: [{ id: "p1", title: "Game | Tools", threads: [
