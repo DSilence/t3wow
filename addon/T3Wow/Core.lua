@@ -101,6 +101,7 @@ function T3Wow_Receive(snapshot, source)
   if T3.dbReady then
     T3:ApplyAcks()
     T3:CheckTransitions()
+    T3:CheckDictation()
   end
   T3:Fire("DATA")
 end
@@ -467,7 +468,14 @@ end
 function T3:PollInterval()
   local settings = T3WowDB.settings
   local bridge = self.snapshot and self.snapshot.bridge
+  if self:IsDictating() then
+    return math.min(settings.liveInterval, self.DICTATION_INTERVAL)
+  end
   if #T3WowDB.outbox > 0 or (bridge and bridge.active) then
+    return settings.liveInterval
+  end
+  -- Typing in the message box: dictated text should show up soon.
+  if self:DictationShortcut() and self.composer and self.composer:HasFocus() then
     return settings.liveInterval
   end
   return settings.idleInterval
@@ -483,11 +491,13 @@ function T3:OnTick()
   -- Poll while the window is open and right after sending. With the window
   -- closed, keep an eye on running threads so their end can be announced.
   local watching = T3WowDB.settings.notify and #self:RunningThreads() > 0
-  if not visible and #T3WowDB.outbox == 0 then
+  -- The app is listening: its text should arrive even with the window closed.
+  local dictating = self:IsDictating()
+  if not visible and #T3WowDB.outbox == 0 and not dictating then
     interval = BACKGROUND_INTERVAL
   end
   local due = GetTime() - self.lastPoll >= interval
-  if (visible or #T3WowDB.outbox > 0 or watching) and due and self:LiveRemaining() > 0 then
+  if (visible or #T3WowDB.outbox > 0 or watching or dictating) and due and self:LiveRemaining() > 0 then
     self:PollLive()
   end
   self:Fire("STATUS")
@@ -828,6 +838,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if self.snapshot then
       self:ApplyAcks()
       self:CheckTransitions()
+      self:CheckDictation()
     end
   elseif event == "PLAYER_LOGIN" then
     self:CountLiveSlots()

@@ -36,26 +36,64 @@ tray-icon = "0.26.1"
 # The settings window (WKWebView, WebView2) and its folder picker.
 wry = { version = "0.57.1", default-features = false }
 rfd = { version = "0.17.2", default-features = false }
-global-hotkey = "0.9"
+# The dictation shortcut.
+global-hotkey = "0.9.0"
 
-# Start Menu shortcut and opening links without PowerShell or rundll32.
+# Start Menu shortcut and opening links without PowerShell or rundll32;
+# speech recognition for dictation.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
+  "Foundation",
+  "Globalization",
+  "Media_SpeechRecognition",
   "Win32_Foundation",
   "Win32_System_Com",
+  "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Console",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Dictation: the microphone and the Speech framework.
 [target.'cfg(target_os = "macos")'.dependencies]
-block2 = { version = "0.6", default-features = false }
-objc2 = { version = "0.6", default-features = false }
-objc2-av-foundation = { version = "0.3", default-features = false }
-objc2-avf-audio = { version = "0.3", default-features = false }
-objc2-foundation = { version = "0.3", default-features = false }
-objc2-speech = { version = "0.3", default-features = false }
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "AVCaptureDevice",
+  "AVMediaFormat",
+] }
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "AVAudioBuffer",
+  "AVAudioEngine",
+  "AVAudioFormat",
+  "AVAudioIONode",
+  "AVAudioNode",
+  "AVAudioTime",
+  "AVAudioTypes",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "NSBundle",
+  "NSError",
+  "NSLocale",
+  "NSOperation",
+  "NSString",
+] }
+objc2-speech = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "objc2-avf-audio",
+  "SFSpeechRecognitionRequest",
+  "SFSpeechRecognitionResult",
+  "SFSpeechRecognitionTask",
+  "SFSpeechRecognizer",
+  "SFTranscription",
+] }
 
 # Version info, icon and manifest in t3wow.exe (build.rs).
 [build-dependencies]

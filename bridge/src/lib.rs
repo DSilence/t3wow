@@ -6,6 +6,7 @@ pub mod log;
 pub mod addon_state;
 pub mod app;
 pub mod config;
+pub mod dictation;
 pub mod error;
 #[cfg(any(target_os = "macos", windows))]
 pub mod installer;

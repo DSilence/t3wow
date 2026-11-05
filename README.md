@@ -142,6 +142,8 @@ The bridge fully syncs the thread you have open, threads you opened recently, ru
 
 **Notifications:** when a thread finishes or an agent needs you, you get a chat line, a sound, a flashing taskbar icon, and a toast at the top of the screen. Click the toast to open the thread. Finished-but-unopened threads are marked **new**. This works with the window closed: while anything runs, the addon refreshes every 10 seconds in the background, and finishes that happen during a reload are still noticed.
 
+**Voice dictation:** turn on **Voice dictation** in the app's Settings. While the game runs, hold the shortcut (**Ctrl+Shift+Space** by default) and speak, then let go. Or tap it once to start and again to stop. You hear a short sound when the microphone turns on and off. The words show up in the message box of the open thread (or new thread) for you to check and send. Nothing is sent on its own. The app does the listening, because addons cannot use the microphone. It uses the system's speech recognition: on macOS the Speech framework, on the Mac itself when your language supports it; on Windows, Windows speech recognition, which needs **Online speech recognition** turned on. The text reaches the game with the next live update: within a second or two while you hold the shortcut or type in the message box, otherwise within the idle refresh interval. The **Language** setting picks the language (for example `en-US` or `de-DE`); when it is empty, the system language is used.
+
 **Slash commands**
 
 | Command | What it does |
@@ -180,7 +182,7 @@ This uses only normal addon features: files at UI load, SavedVariables, and scre
 
 ## Configuration
 
-Settings live in `~/.t3wow/config.json`, written by Settings, `login`, and `install`. The bridge picks up changes while it runs. The first and last keys are also in Settings; the rest are for hand-tuning:
+Settings live in `~/.t3wow/config.json`, written by Settings, `login`, and `install`. The bridge picks up changes while it runs. `liveSlots`, `autoUpdate` and `dictation` are also in Settings; the rest are for hand-tuning:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -194,6 +196,7 @@ Settings live in `~/.t3wow/config.json`, written by Settings, `login`, and `inst
 | `maxCharsPerMessage` | 6000 | Longer messages are shortened (open T3 Code for the full text). |
 | `oauthPort` | 47823 | Local port for the sign-in redirect. |
 | `autoUpdate` | true | Let the tray app install new releases on its own. |
+| `dictation` | off | `{ "enabled", "hotkey", "language" }` for voice dictation (Settings). |
 
 Your sign-in token is in `~/.t3wow/auth.json` (mode 600). Set `T3WOW_HOME` to use a different folder.
 
@@ -244,6 +247,7 @@ Keep asset names (`t3wow-<target>[.exe]`) in sync with what the updater looks fo
 - **Tool permission prompts cannot be approved over MCP.** Approve the bridge with **Auto** or **Full access** if game-started threads should run unattended.
 - **WoW fonts are limited.** No emoji and some scripts are missing. Bold and italics appear as colours (one line cannot switch fonts mid-line), and rendered text is not selectable — use **Copy**.
 - **Live updates depend on symlinks on macOS/Linux.** Each slot’s `Data.lua` links to one shared file, so a snapshot is written once. If a client does not follow links (updates never arrive), reinstall with `--copy-slots`. Windows always copies.
+- **Dictation needs the app.** The shortcut belongs to the tray app (not `t3wow run`) and only works while the game runs. macOS asks once for the microphone and for speech recognition. Because the app is ad-hoc signed, macOS may ask again after an update. A shortcut that another app already uses cannot be registered: pick another in Settings.
 - **Live updates need per-client verification.** If a client caches addon files, updates still arrive via **Sync** or `/reload`.
 
 ## License

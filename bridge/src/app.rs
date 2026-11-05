@@ -81,6 +81,10 @@ fn info_plist() -> String {
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>T3 WoW listens while you hold the dictation shortcut, so you can speak messages to your agents.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>T3 WoW turns what you say while holding the dictation shortcut into text for the game.</string>
 {env}</dict>
 </plist>
 "#
@@ -320,6 +324,9 @@ mod tests {
         assert!(plist.contains("<key>LSUIElement</key>\n  <true/>"), "no Dock icon");
         assert!(plist.contains("<string>t3wow</string>"));
         assert!(plist.contains("<key>CFBundleIconFile</key>\n  <string>AppIcon</string>"));
+        // Without these macOS ends the app when dictation asks for access.
+        assert!(plist.contains("<key>NSMicrophoneUsageDescription</key>"));
+        assert!(plist.contains("<key>NSSpeechRecognitionUsageDescription</key>"));
     }
 
     #[test]

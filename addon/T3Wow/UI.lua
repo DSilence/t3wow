@@ -1063,8 +1063,16 @@ function T3:RenderThread()
   elseif self.question then
     placeholderText = "Click an option above, or type your own answer and press Answer."
   end
+  local shortcut = self:DictationShortcut()
+  if shortcut and composerEnabled and not self.question then
+    placeholderText = placeholderText .. "  Or hold " .. shortcut .. " and speak."
+  end
   self.placeholder:SetText(placeholderText)
-  self.composerHint:SetText(self:CanFastSend() and "Ctrl+Enter to send." or "Ctrl+Enter to send. Sending reloads the UI.")
+  if self:IsDictating() then
+    self.composerHint:SetText(U.Color("ff6060", "Listening...") .. " Release " .. (shortcut or "the shortcut") .. " when done.")
+  else
+    self.composerHint:SetText(self:CanFastSend() and "Ctrl+Enter to send." or "Ctrl+Enter to send. Sending reloads the UI.")
+  end
 
   -- Restore the draft for this thread or project.
   local key = self:DraftKey()
@@ -1072,6 +1080,7 @@ function T3:RenderThread()
     self.draftKey = key
     self.composer:SetText(key and db.drafts and db.drafts[key] or "")
   end
+  self:ApplyPendingDictation()
   self.placeholder:SetShown(self.composer:GetText() == "")
 end
 

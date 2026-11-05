@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::addon_state::{AddonState, AddonStateReader, merge_states, state_from_db};
 use crate::config::{BRIDGE_VERSION, BridgeConfig};
+use crate::dictation;
 use crate::error::{Error, Result};
 use crate::log;
 use crate::lua::to_lua;
@@ -245,7 +246,7 @@ fn session(
             }
         }
         let snapshot = engine.snapshot(&status, outbox.acks());
-        publisher.publish(snapshot, &flavors, &slots);
+        publisher.publish(snapshot.clone(), &flavors, &slots);
 
         if let Some(game_running) = game_running
             && !game_running()
@@ -268,7 +269,9 @@ fn session(
         watched.extend(shots.dirs().iter().cloned());
         // A new sign-in from Settings ends the wait.
         watched.push(crate::oauth::auth_file());
-        wait_for_change(Duration::from_millis(wait), &watched, stop);
+        // A dictation goes out right away, without waiting for T3.
+        let republish = || publisher.publish(snapshot.clone(), &flavors, &slots);
+        wait_for_change(Duration::from_millis(wait), &watched, stop, republish);
         if (options.load_config)().is_ok_and(|config| SessionSettings::of(&config) != settings) {
             return Ok(SessionEnd::SettingsChanged);
         }
@@ -283,16 +286,22 @@ fn account_name(file: &Path) -> String {
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
-/// Sleep, but wake up early when WoW rewrites a SavedVariables file.
-fn wait_for_change(duration: Duration, files: &[PathBuf], stop: &AtomicBool) {
+/// Sleep, but wake up early when WoW rewrites a SavedVariables file. Calls
+/// `dictation_changed` when a dictation starts or ends meanwhile.
+fn wait_for_change(duration: Duration, files: &[PathBuf], stop: &AtomicBool, mut dictation_changed: impl FnMut()) {
     let mtimes = |files: &[PathBuf]| -> Vec<Option<SystemTime>> {
         files.iter().map(|f| fs::metadata(f).and_then(|m| m.modified()).ok()).collect()
     };
     let before = mtimes(files);
     let deadline = Instant::now() + duration;
     let mut next_check = Instant::now() + SAVED_VARIABLES_POLL;
+    let mut dictation = dictation::version();
     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
         std::thread::sleep(STEP.min(deadline.saturating_duration_since(Instant::now())));
+        if dictation::version() != dictation {
+            dictation = dictation::version();
+            dictation_changed();
+        }
         if Instant::now() >= next_check {
             if mtimes(files) != before {
                 return;
@@ -311,6 +320,8 @@ struct Publisher {
 
 impl Publisher {
     fn publish(&mut self, snapshot: Value, flavors: &[PathBuf], slots: &HashMap<PathBuf, u32>) {
+        let mut snapshot = snapshot;
+        dictation::add_to_snapshot(&mut snapshot);
         let body = to_lua(&snapshot);
         if body == self.last_body && self.last_at.is_some_and(|at| at.elapsed() < HEARTBEAT) {
             return;

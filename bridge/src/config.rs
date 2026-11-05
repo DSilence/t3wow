@@ -35,7 +35,29 @@ pub struct BridgeConfig {
     pub max_chars_per_message: usize,
     /// The tray app installs new releases on its own (while the game is closed).
     pub auto_update: bool,
+    /// Voice dictation into the game's composer (tray app only).
+    pub dictation: DictationConfig,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DictationConfig {
+    pub enabled: bool,
+    /// A global shortcut, like `Ctrl+Shift+Space`: hold it while speaking, or
+    /// tap it to start and again to stop.
+    pub hotkey: String,
+    /// A BCP 47 language tag (`en-US`, `de-DE`); the system language when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl Default for DictationConfig {
+    fn default() -> Self {
+        Self { enabled: false, hotkey: DEFAULT_DICTATION_HOTKEY.into(), language: None }
+    }
+}
+
+pub const DEFAULT_DICTATION_HOTKEY: &str = "Ctrl+Shift+Space";
 
 impl Default for BridgeConfig {
     fn default() -> Self {
@@ -53,6 +75,7 @@ impl Default for BridgeConfig {
             messages_per_thread: 30,
             max_chars_per_message: 6_000,
             auto_update: true,
+            dictation: DictationConfig::default(),
         }
     }
 }

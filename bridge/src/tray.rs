@@ -8,13 +8,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use global_hotkey::hotkey::HotKey;
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::app::{self, TrayRequest};
-use crate::config::{BRIDGE_VERSION, load_config};
+use crate::config::{BRIDGE_VERSION, DictationConfig, load_config};
+use crate::dictation::{self, Gesture, Recorder, Trigger};
 use crate::error::Result;
 use crate::lock::BridgeLock;
 use crate::log;
@@ -30,6 +33,8 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static CHECK_NOW: AtomicBool = AtomicBool::new(false);
 /// An update is installed: start the new version and quit.
 static RESTART: AtomicBool = AtomicBool::new(false);
+/// Dictation stopped without the shortcut (time limit, error).
+static DICTATION_STOPPED: AtomicBool = AtomicBool::new(false);
 
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -60,6 +65,8 @@ enum UserEvent {
     Page(String),
     /// Work for the settings page finished.
     Wake,
+    /// The dictation shortcut went down or up.
+    HotKey(GlobalHotKeyEvent),
 }
 
 pub struct TrayOptions {
@@ -337,6 +344,126 @@ fn stop_bridge(bridge: &mut Option<std::thread::JoinHandle<()>>) {
     }
 }
 
+/// The dictation shortcut, registered while dictation is on and the game runs,
+/// and what its presses do.
+struct Shortcut {
+    manager: Option<GlobalHotKeyManager>,
+    registered: Option<(HotKey, String)>,
+    /// The shortcut that failed to register, so it is not retried every second.
+    failed: Option<String>,
+    trigger: Trigger,
+    recorder: Option<Recorder>,
+    config: DictationConfig,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Shortcut {
+    fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let manager =
+            GlobalHotKeyManager::new().inspect_err(|error| log!("dictation shortcuts are not available: {error}")).ok();
+        Shortcut {
+            manager,
+            registered: None,
+            failed: None,
+            trigger: Trigger::default(),
+            recorder: None,
+            config: DictationConfig::default(),
+            wake,
+        }
+    }
+
+    fn recorder(&mut self) -> &Recorder {
+        let wake = self.wake.clone();
+        self.recorder.get_or_insert_with(|| {
+            Recorder::spawn(move || {
+                DICTATION_STOPPED.store(true, Ordering::Relaxed);
+                wake();
+            })
+        })
+    }
+
+    /// Register or drop the shortcut to match the settings and whether the
+    /// bridge is following a game.
+    fn update(&mut self, config: &DictationConfig, in_game: bool) {
+        if config.enabled && !self.config.enabled {
+            // Turned on: ask for access now rather than at the first dictation.
+            self.recorder().prepare();
+        }
+        self.config = config.clone();
+        let wanted = if config.enabled && in_game { dictation::shortcut_label(&config.hotkey) } else { None };
+        if self.registered.as_ref().map(|(_, label)| label) == wanted.as_ref() {
+            return;
+        }
+        if let Some((hotkey, label)) = self.registered.take() {
+            if let Some(manager) = &self.manager {
+                let _ = manager.unregister(hotkey);
+            }
+            log!("dictation shortcut {label} released");
+            if self.trigger.cancel() {
+                self.recorder().stop();
+            }
+            dictation::set_shortcut(None);
+        }
+        if !config.enabled {
+            self.failed = None;
+            dictation::update_status(|status| status.shortcut_error = None);
+        }
+        let Some(label) = wanted else {
+            if config.enabled && in_game {
+                dictation::update_status(|status| {
+                    status.shortcut_error = Some(format!("{} is not a shortcut. Pick another one.", config.hotkey))
+                });
+            }
+            return;
+        };
+        if self.failed.as_ref() == Some(&label) {
+            return;
+        }
+        let parsed = dictation::shortcut_spec(&label).and_then(|spec| spec.parse::<HotKey>().ok());
+        let registered = match (&self.manager, parsed) {
+            (Some(manager), Some(hotkey)) => manager.register(hotkey).map(|()| hotkey).map_err(|e| e.to_string()),
+            (None, _) => Err("shortcuts are not available".into()),
+            (_, None) => Err("not a valid shortcut".into()),
+        };
+        match registered {
+            Ok(hotkey) => {
+                log!("dictation shortcut {label} registered");
+                self.failed = None;
+                dictation::update_status(|status| status.shortcut_error = None);
+                dictation::set_shortcut(Some(label.clone()));
+                self.registered = Some((hotkey, label));
+            }
+            Err(error) => {
+                log!("could not register the dictation shortcut {label}: {error}");
+                dictation::update_status(|status| {
+                    status.shortcut_error =
+                        Some(format!("{label} could not be registered (another app may use it). Pick another one."))
+                });
+                self.failed = Some(label);
+            }
+        }
+    }
+
+    fn handle(&mut self, event: GlobalHotKeyEvent) {
+        if self.registered.as_ref().map(|(hotkey, _)| hotkey.id()) != Some(event.id) {
+            return;
+        }
+        let now = Instant::now();
+        let gesture = match event.state {
+            HotKeyState::Pressed => self.trigger.press(now),
+            HotKeyState::Released => self.trigger.release(now),
+        };
+        match gesture {
+            Some(Gesture::Start) => {
+                let language = self.config.language.clone();
+                self.recorder().start(language);
+            }
+            Some(Gesture::Stop) => self.recorder().stop(),
+            None => {}
+        }
+    }
+}
+
 pub fn run_tray(options: TrayOptions) -> Result<()> {
     #[cfg(windows)]
     crate::win::detach_console();
@@ -390,6 +517,19 @@ pub fn run_tray(options: TrayOptions) -> Result<()> {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(event));
         }));
     }
+    {
+        let proxy = proxy.clone();
+        GlobalHotKeyEvent::set_event_handler(Some(move |event| {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::HotKey(event));
+        }));
+    }
+    let mut shortcut = {
+        let proxy = proxy.clone();
+        Shortcut::new(Arc::new(move || {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::Wake);
+        }))
+    };
+    let mut next_shortcut_check = Instant::now();
     let mut settings = {
         let (wake_proxy, page_proxy) = (proxy.clone(), proxy.clone());
         Settings::new(
@@ -490,8 +630,11 @@ pub fn run_tray(options: TrayOptions) -> Result<()> {
                     Some(Action::OpenLog) => open_file(&service::log_file()),
                     None => {}
                 }
+                // Dictation settings take effect right away.
+                next_shortcut_check = Instant::now();
             }
             Event::UserEvent(UserEvent::Wake) => refresh_settings = true,
+            Event::UserEvent(UserEvent::HotKey(event)) => shortcut.handle(event),
             Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. }
                 if Some(window_id) == settings.window_id() =>
             {
@@ -537,6 +680,18 @@ pub fn run_tray(options: TrayOptions) -> Result<()> {
             refresh_settings = true;
         }
         let current = state.lock().unwrap().clone();
+        if DICTATION_STOPPED.swap(false, Ordering::Relaxed) {
+            shortcut.trigger.reset();
+        }
+        if shown.as_ref() != Some(&current) || Instant::now() >= next_shortcut_check {
+            // The shortcut is only taken while the bridge follows a game.
+            let in_game = matches!(
+                current,
+                TrayState::Run(RunState::Syncing { .. } | RunState::Error(_) | RunState::SignInNeeded)
+            );
+            shortcut.update(&load_config().unwrap_or_default().dictation, in_game);
+            next_shortcut_check = Instant::now() + Duration::from_secs(3);
+        }
         if shown.as_ref() != Some(&current) {
             let text = describe(&current);
             status.set_text(&text);

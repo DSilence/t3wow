@@ -927,3 +927,77 @@ describe("compact", () => {
     assert.equal(vm.run(`return T3Wow.compactButton:IsShown()`), false);
   });
 });
+
+describe("dictation", () => {
+  const BRIDGE = { status: "ok", server: "env.example", canOperate: true, dictation: { shortcut: "Ctrl+Shift+Space" } };
+  const take = (fields: Record<string, LuaValue>, seq: number) =>
+    snapshot({ projects: PROJECTS, threads: THREADS, bridge: BRIDGE, dictation: { id: (NOW - 2) * 1000, ...fields } }, seq);
+  const deliver = (vm: LuaVM, chunk: string) => vm.runAddonFile(dataChunk(chunk, "live"), "live.lua");
+  const composer = (vm: LuaVM) => vm.run(`return T3WowComposerEdit:GetText()`) as string;
+  const onThread = () => {
+    const vm = boot({ liveSlots: 30, inbox: snapshot({ projects: PROJECTS, threads: THREADS, bridge: BRIDGE }) });
+    vm.run(`T3Wow:Toggle(); T3Wow:Select("p1", "t1")`);
+    return vm;
+  };
+
+  it("puts the dictated text into the message box once", () => {
+    const vm = onThread();
+    vm.run(`T3WowComposerEdit:SetText("Please")`);
+    deliver(vm, take({ state: "done", text: "fix the login bug" }, 2));
+    assert.equal(composer(vm), "Please fix the login bug");
+    assert.equal(vm.run(`return T3WowDB.drafts.t1`), "Please fix the login bug", "kept as the draft");
+    // The same dictation in later snapshots, and after a reload, is not inserted again.
+    deliver(vm, take({ state: "done", text: "fix the login bug" }, 3));
+    assert.equal(composer(vm), "Please fix the login bug");
+    assert.equal(vm.run(`return T3WowDB.lastDictation`), (NOW - 2) * 1000);
+  });
+
+  it("shows that the app listens and polls quickly, even with the window closed", () => {
+    const vm = onThread();
+    // t1 asks a question, so the hint shows on t2.
+    vm.run(`T3Wow:Select("p1", "t2")`);
+    assert.match(vm.run(`return T3Wow.placeholder:GetText()`) as string, /hold Ctrl\+Shift\+Space and speak/);
+    vm.run(`T3Wow:Select("p1", "t1")`);
+    deliver(vm, take({ state: "listening" }, 2));
+    assert.match(vm.run(`return T3Wow.composerHint:GetText()`) as string, /Listening/);
+    vm.run(`T3Wow:Toggle()`);
+    vm.run(`__stub.onLoadAddOn = function(name) __stub.lastLoaded = name end`);
+    vm.run(`__stub.lastLoaded = nil; __stub.clock = __stub.clock + 1; __stub.ticker()`);
+    assert.notEqual(vm.run(`return __stub.lastLoaded`), null);
+    vm.run(`__stub.lastLoaded = nil; __stub.clock = __stub.clock + 1; __stub.ticker()`);
+    assert.notEqual(vm.run(`return __stub.lastLoaded`), null, "every second");
+    // The text opens the window.
+    deliver(vm, take({ state: "done", text: "hello" }, 3));
+    assert.equal(vm.run(`return T3WowFrame:IsShown()`), true);
+    assert.equal(composer(vm), "hello");
+    assert.doesNotMatch(vm.run(`return T3Wow.composerHint:GetText()`) as string, /Listening/);
+  });
+
+  it("inserts at the cursor while typing", () => {
+    const vm = onThread();
+    vm.run(`
+      T3WowComposerEdit:SetText("ab")
+      T3WowComposerEdit.HasFocus = function() return true end
+      T3WowComposerEdit.GetCursorPosition = function() return 1 end
+      T3WowComposerEdit.SetCursorPosition = function(self, n) self.text = self.text:sub(1, n); self.rest = "b" end`);
+    deliver(vm, take({ state: "done", text: "middle" }, 2));
+    assert.equal(vm.run(`return T3WowComposerEdit.text .. T3WowComposerEdit.rest`), "a middle b");
+  });
+
+  it("keeps the text until a thread is open", () => {
+    const vm = boot({ liveSlots: 30, inbox: snapshot({ projects: PROJECTS, threads: THREADS, bridge: BRIDGE }) });
+    vm.run(`T3Wow:Toggle()`);
+    deliver(vm, take({ state: "done", text: "later" }, 2));
+    assert.match(vm.run(`return table.concat(__stub.prints, "\\n")`) as string, /Dictated text is waiting/);
+    vm.run(`T3Wow:Select("p1", "t1")`);
+    assert.equal(composer(vm), "later");
+  });
+
+  it("reports failures and skips old dictations", () => {
+    const vm = onThread();
+    deliver(vm, take({ state: "error", message: "Allow T3 WoW under Microphone" }, 2));
+    assert.match(vm.run(`return table.concat(__stub.prints, "\\n")`) as string, /Dictation: Allow T3 WoW under Microphone/);
+    deliver(vm, take({ state: "done", text: "stale", id: (NOW - 600) * 1000 }, 3));
+    assert.equal(composer(vm), "");
+  });
+});

@@ -113,6 +113,10 @@
   ul.flavors .path { color: var(--muted); font-size: 12px; word-break: break-all; }
   ul.flavors .empty { color: var(--muted); }
   label.check { display: flex; gap: 8px; align-items: center; }
+  .field-label { width: 70px; color: var(--muted); }
+  button.key { font-variant-numeric: tabular-nums; min-width: 150px; }
+  button.key.recording { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input.language { width: 120px; }
   .spacer { flex: 1; }
   footer { display: flex; gap: 16px; justify-content: flex-end; margin-top: 4px; }
   [hidden] { display: none !important; }
@@ -185,6 +189,28 @@
 </section>
 
 <section>
+  <h2>Voice dictation</h2>
+  <p class="hint">Hold the shortcut while you speak, or tap it to start and tap again to stop. The words go into
+    the T3 window's message box in game, for you to check and send. The shortcut only works while the game runs.</p>
+  <label class="check"><input type="checkbox" id="dictation"> Dictate messages with a shortcut</label>
+  <div id="dictation-options">
+    <div class="row" style="margin-top:10px">
+      <span class="field-label">Shortcut</span>
+      <button class="key" id="shortcut"></button>
+      <span class="hint" id="shortcut-hint" style="margin:0"></span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span class="field-label">Language</span>
+      <input class="language" type="text" id="language" placeholder="System" spellcheck="false" autocomplete="off">
+      <span class="hint" style="margin:0">A language tag like en-US or de-DE; empty uses the system language.</span>
+    </div>
+    <p class="hint" id="dictation-platform" style="margin:10px 0 0"></p>
+    <div id="dictation-busy" class="message busy" hidden></div>
+    <div id="dictation-error" class="message error" hidden></div>
+  </div>
+</section>
+
+<section>
   <h2>Updates</h2>
   <div class="row">
     <label class="check grow"><input type="checkbox" id="auto-update"> Install updates automatically (while the game is closed)</label>
@@ -205,6 +231,9 @@
   // Fields the user is typing in are not overwritten by updates.
   let urlEdited = false;
   let slotsEdited = false;
+  let languageEdited = false;
+  // Waiting for the keys of a new dictation shortcut.
+  let recordingShortcut = false;
 
   function show(id, text) {
     const element = $(id);
@@ -303,10 +332,49 @@
       ? 'Each one is a copy of the data the bridge rewrites, so very high numbers make updates slower.'
       : 'They all share one file, so a high number costs nothing.';
 
+    renderDictation(next);
+
     $('auto-update').checked = next.update.auto;
     $('check-updates').textContent = next.update.text;
     $('check-updates').disabled = !next.update.enabled;
   };
+
+  function renderDictation(next) {
+    const dictation = next.dictation;
+    $('dictation').checked = dictation.enabled;
+    $('dictation-options').hidden = !dictation.enabled;
+    if (!recordingShortcut) {
+      $('shortcut').textContent = dictation.shortcut;
+      $('shortcut-hint').textContent = 'Click to change.';
+    }
+    if (!languageEdited) $('language').value = dictation.language || '';
+    $('dictation-platform').textContent = next.platform === 'windows'
+      ? 'Uses Windows speech recognition, which sends your voice to Microsoft: turn on Settings › Privacy & security › Speech › Online speech recognition.'
+      : 'Uses macOS speech recognition, on this Mac when the language supports it. macOS asks once for the microphone and for speech recognition (again after updates).';
+    busyText('dictation-busy', dictation.access === 'asking'
+      ? 'Waiting for you to allow the microphone and speech recognition…' : '');
+    show('dictation-error', dictation.problem || dictation.shortcutError || dictation.lastError);
+  }
+
+  // A shortcut from a key press: modifiers plus one key, or a function key alone.
+  function shortcutFrom(event) {
+    if (/^(Shift|Control|Alt|Meta|OS)/.test(event.code) || !event.code) return null;
+    const parts = [];
+    if (event.ctrlKey) parts.push('Ctrl');
+    if (event.altKey) parts.push('Alt');
+    if (event.shiftKey) parts.push('Shift');
+    if (event.metaKey) parts.push('Cmd');
+    const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(event.code);
+    if (!parts.length && !functionKey) return null;
+    parts.push(event.code);
+    return parts.join('+');
+  }
+
+  function stopRecording() {
+    recordingShortcut = false;
+    $('shortcut').classList.remove('recording');
+    if (state) renderDictation(state);
+  }
 
   function showSlotsRange(problem) {
     const range = $('slots-range');
@@ -348,6 +416,38 @@
     if (slots === null) return;
     slotsEdited = false;
     send('setSlots', { slots });
+  });
+  $('dictation').addEventListener('change', () => send('setDictation', { on: $('dictation').checked }));
+  $('shortcut').addEventListener('click', () => {
+    recordingShortcut = true;
+    $('shortcut').classList.add('recording');
+    $('shortcut').textContent = 'Press the keys…';
+    $('shortcut-hint').textContent = 'Use a modifier (Ctrl, Alt, Shift) with a key, or an F key. Esc cancels.';
+  });
+  $('shortcut').addEventListener('blur', () => { if (recordingShortcut) stopRecording(); });
+  document.addEventListener('keydown', (event) => {
+    if (!recordingShortcut) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      stopRecording();
+      return;
+    }
+    const shortcut = shortcutFrom(event);
+    if (!shortcut) return;
+    send('setDictationShortcut', { shortcut });
+    $('shortcut').textContent = shortcut;
+    stopRecording();
+  }, true);
+  const saveLanguage = () => {
+    if (!languageEdited) return;
+    languageEdited = false;
+    send('setDictationLanguage', { language: $('language').value });
+  };
+  $('language').addEventListener('input', () => { languageEdited = true; });
+  $('language').addEventListener('change', saveLanguage);
+  $('language').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') saveLanguage();
   });
   $('auto-update').addEventListener('change', () => send('setAutoUpdate', { on: $('auto-update').checked }));
   $('check-updates').addEventListener('click', () => send('checkForUpdates'));

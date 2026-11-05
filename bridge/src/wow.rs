@@ -27,6 +27,7 @@ pub const ADDON_FILES: &[(&str, &[u8])] = &[
     ("UI.lua", include_bytes!("../../addon/T3Wow/UI.lua")),
     ("Notify.lua", include_bytes!("../../addon/T3Wow/Notify.lua")),
     ("FastSend.lua", include_bytes!("../../addon/T3Wow/FastSend.lua")),
+    ("Dictation.lua", include_bytes!("../../addon/T3Wow/Dictation.lua")),
     ("Fonts/JetBrainsMono-Regular.ttf", include_bytes!("../../addon/T3Wow/Fonts/JetBrainsMono-Regular.ttf")),
     ("Fonts/OFL.txt", include_bytes!("../../addon/T3Wow/Fonts/OFL.txt")),
 ];

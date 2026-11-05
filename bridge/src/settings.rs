@@ -16,6 +16,7 @@ use tao::window::{Window, WindowBuilder, WindowId};
 use wry::{WebView, WebViewBuilder};
 
 use crate::config::{BRIDGE_VERSION, BridgeConfig, load_config, save_config};
+use crate::dictation::{self, Access};
 use crate::error::{Error, Result};
 use crate::setup::{self, SignIn};
 use crate::t3::T3Client;
@@ -251,6 +252,27 @@ impl Settings {
             "setAutoUpdate" => {
                 let on = message["on"].as_bool().unwrap_or(true);
                 if let Err(error) = edit_config(|config| config.auto_update = on) {
+                    log!("could not save settings: {error}");
+                }
+            }
+            "setDictation" => {
+                let on = message["on"].as_bool().unwrap_or(false);
+                if let Err(error) = edit_config(|config| config.dictation.enabled = on) {
+                    log!("could not save settings: {error}");
+                }
+            }
+            "setDictationShortcut" => match dictation::shortcut_label(&text("shortcut")) {
+                Some(label) => {
+                    if let Err(error) = edit_config(|config| config.dictation.hotkey = label) {
+                        log!("could not save settings: {error}");
+                    }
+                }
+                None => log!("settings page sent an invalid shortcut {:?}", text("shortcut")),
+            },
+            "setDictationLanguage" => {
+                let language = text("language").trim().to_string();
+                let language = (!language.is_empty()).then_some(language);
+                if let Err(error) = edit_config(|config| config.dictation.language = language) {
                     log!("could not save settings: {error}");
                 }
             }
@@ -531,6 +553,25 @@ fn state_json(config: &BridgeConfig, jobs: &Jobs, info: &TrayInfo, game_running:
         "slots": config.live_slots,
         "slotsMax": setup::MAX_LIVE_SLOTS,
         "update": { "auto": config.auto_update, "text": info.update_text, "enabled": info.update_enabled },
+        "dictation": dictation_json(&config.dictation, &dictation::status()),
+    })
+}
+
+fn dictation_json(config: &crate::config::DictationConfig, status: &dictation::Status) -> Value {
+    let access = match status.access {
+        Access::Unknown => "unknown",
+        Access::Asking => "asking",
+        Access::Granted => "granted",
+        Access::Denied(_) => "denied",
+    };
+    json!({
+        "enabled": config.enabled,
+        "shortcut": dictation::shortcut_label(&config.hotkey).unwrap_or_else(|| config.hotkey.clone()),
+        "language": config.language,
+        "access": access,
+        "problem": matches!(status.access, Access::Denied(_)).then(|| status.access_problem()),
+        "shortcutError": status.shortcut_error,
+        "lastError": status.last_error,
     })
 }
 
@@ -625,14 +666,40 @@ mod tests {
         assert_eq!(state["env"]["signIn"], "no");
         assert_eq!(state["slots"], 120);
         assert_eq!(state["update"]["text"], "Check for updates");
+        assert_eq!(state["dictation"]["enabled"], false);
+        assert_eq!(state["dictation"]["shortcut"], "Ctrl+Shift+Space");
+    }
+
+    #[test]
+    fn describes_dictation_problems() {
+        let config = crate::config::DictationConfig { enabled: true, ..Default::default() };
+        let status = dictation::Status {
+            access: Access::Denied("Allow T3 WoW under Microphone".into()),
+            shortcut_error: Some("taken".into()),
+            last_error: None,
+        };
+        let state = dictation_json(&config, &status);
+        assert_eq!(state["access"], "denied");
+        assert_eq!(state["problem"], "Allow T3 WoW under Microphone");
+        assert_eq!(state["shortcutError"], "taken");
     }
 
     #[test]
     fn the_page_renders_state_and_sends_commands() {
         assert!(PAGE.contains("window.render"));
-        for command in
-            ["ready", "signIn", "cancelSignIn", "signOut", "addWow", "setFlavor", "setSlots", "setAutoUpdate"]
-        {
+        for command in [
+            "ready",
+            "signIn",
+            "cancelSignIn",
+            "signOut",
+            "addWow",
+            "setFlavor",
+            "setSlots",
+            "setAutoUpdate",
+            "setDictation",
+            "setDictationShortcut",
+            "setDictationLanguage",
+        ] {
             assert!(PAGE.contains(&format!("'{command}'")), "page never sends {command}");
         }
     }
