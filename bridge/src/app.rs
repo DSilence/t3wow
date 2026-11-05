@@ -144,19 +144,14 @@ pub fn install() -> Result<PathBuf> {
     let ico = exe.with_extension("ico");
     fs::write(&ico, ICO)?;
     let link = app_path();
-    let quote = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
-    let script = format!(
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath = '{}'; \
-         $s.Arguments = 'tray'; $s.Description = 'T3 Code for World of Warcraft'; \
-         $s.IconLocation = '{},0'; $s.Save()",
-        quote(&link),
-        quote(&exe),
-        quote(&ico)
-    );
-    let status = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).status()?;
-    if !status.success() {
-        return Err(Error::other("Could not create the Start Menu shortcut."));
-    }
+    let shortcut = crate::win::Shortcut {
+        target: &exe,
+        arguments: "tray",
+        description: "T3 Code for World of Warcraft",
+        icon: &ico,
+    };
+    crate::win::create_shortcut(&link, &shortcut)
+        .map_err(|error| Error::other(format!("Could not create the Start Menu shortcut: {error}")))?;
     Ok(link)
 }
 

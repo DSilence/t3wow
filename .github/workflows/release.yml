@@ -125,6 +125,13 @@ jobs:
         if: ${{ !matrix.cross }}
         shell: bash
         run: dist/t3wow-${{ matrix.target }}${{ matrix.ext }} version
+      - name: Check the Windows version info
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $info = (Get-Item "dist/t3wow-${{ matrix.target }}.exe").VersionInfo
+          $info | Format-List ProductName, FileDescription, ProductVersion, CompanyName
+          if ($info.ProductName -ne 'T3 WoW') { throw 'The executable has no version resource' }
       - uses: actions/upload-artifact@v4
         with:
           name: t3wow-${{ matrix.target }}

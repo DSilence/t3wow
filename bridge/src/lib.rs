@@ -22,4 +22,6 @@ pub mod tray;
 pub mod update;
 pub mod url;
 pub mod watch;
+#[cfg(windows)]
+pub mod win;
 pub mod wow;

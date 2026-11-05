@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+#[cfg(not(windows))]
+use std::process::Command;
+use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -78,20 +80,21 @@ fn parse_args() -> Result<Args> {
 }
 
 fn open_in_browser(target: &str) {
-    let mut command = if cfg!(target_os = "macos") {
-        let mut c = Command::new("open");
-        c.arg(target);
-        c
-    } else if cfg!(windows) {
-        let mut c = Command::new("rundll32");
-        c.args(["url.dll,FileProtocolHandler", target]);
-        c
-    } else {
-        let mut c = Command::new("xdg-open");
-        c.arg(target);
-        c
-    };
-    let _ = command.spawn();
+    #[cfg(windows)]
+    {
+        let _ = t3wow::win::shell_open(target);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = browser_command(target).spawn();
+    }
+}
+
+#[cfg(not(windows))]
+fn browser_command(target: &str) -> Command {
+    let mut command = Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" });
+    command.arg(target);
+    command
 }
 
 fn normalize_mcp_url(input: &str) -> String {

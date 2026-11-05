@@ -34,6 +34,19 @@ libc = "0.2.190"
 tao = "0.37.1"
 tray-icon = "0.26.1"
 
+# Start Menu shortcut and opening links without PowerShell or rundll32.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# Version info, icon and manifest in t3wow.exe (build.rs).
+[build-dependencies]
+winresource = "0.1.34"
+
 [dev-dependencies]
 jpeg-encoder = "0.7.1"
 mlua = { version = "0.12.2", features = ["lua51", "vendored"] }
