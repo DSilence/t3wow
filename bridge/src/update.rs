@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::config::{BRIDGE_VERSION, create_private_dir, home_dir, load_config};
@@ -30,14 +29,16 @@ pub struct Release {
     pub sums_url: String,
 }
 
-/// The GitHub API URL for the latest release. `T3WOW_UPDATE_URL` overrides it
-/// (for forks and tests).
+/// The release page that redirects to the latest release
+/// (`.../releases/tag/v1.2.3`). This is github.com rather than the GitHub
+/// API, whose limit of 60 requests an hour is shared by everyone behind the
+/// same address and runs out on busy networks (403). Drafts and pre-releases
+/// are never "latest". `T3WOW_UPDATE_URL` overrides it (for forks and tests).
 pub fn latest_release_url() -> String {
     if let Some(url) = std::env::var_os("T3WOW_UPDATE_URL") {
         return url.to_string_lossy().into_owned();
     }
-    let slug = REPOSITORY.trim_end_matches('/').trim_start_matches("https://github.com/");
-    format!("https://api.github.com/repos/{slug}/releases/latest")
+    format!("{}/releases/latest", REPOSITORY.trim_end_matches('/'))
 }
 
 /// The release asset built for this platform.
@@ -66,59 +67,59 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-fn agent(timeout: Duration) -> ureq::Agent {
+fn agent(timeout: Duration, max_redirects: u32) -> ureq::Agent {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
+        .max_redirects(max_redirects)
         .user_agent(format!("t3wow/{BRIDGE_VERSION}"))
         .build()
         .into()
 }
 
 fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>> {
-    let mut response = agent.get(url).header("Accept", "application/vnd.github+json").call()?;
+    let mut response = agent.get(url).call()?;
     if !response.status().is_success() {
         return Err(Error::other(format!("{url} answered {}", response.status())));
     }
     Ok(response.body_mut().with_config().limit(limit).read_to_vec()?)
 }
 
-/// The latest release, when it is newer than `current`.
-pub fn check(api_url: &str, current: &str) -> Result<Option<Release>> {
-    let agent = agent(Duration::from_secs(30));
-    let mut response = agent.get(api_url).header("Accept", "application/vnd.github+json").call()?;
-    // No release published yet.
-    if response.status() == 404 {
+/// The latest release, when it is newer than `current`. `latest_url` is
+/// [`latest_release_url`].
+pub fn check(latest_url: &str, current: &str) -> Result<Option<Release>> {
+    let response = agent(Duration::from_secs(30), 0).get(latest_url).call()?;
+    let status = response.status();
+    // No such repository, or no release published yet.
+    if status == 404 {
         return Ok(None);
     }
-    if !response.status().is_success() {
-        return Err(Error::other(format!("GitHub answered {}", response.status())));
+    if !status.is_redirection() {
+        return Err(Error::other(format!("GitHub answered {status}")));
     }
-    let json: Value = serde_json::from_slice(&response.body_mut().with_config().limit(4 * 1024 * 1024).read_to_vec()?)?;
-    parse_release(&json, current)
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| Error::other("GitHub did not say which release is the latest"))?;
+    Ok(parse_latest(latest_url, location, current))
 }
 
-pub fn parse_release(json: &Value, current: &str) -> Result<Option<Release>> {
-    if json["draft"].as_bool() == Some(true) || json["prerelease"].as_bool() == Some(true) {
-        return Ok(None);
-    }
-    let tag = json["tag_name"].as_str().ok_or_else(|| Error::other("release without a tag"))?;
+/// The release that `latest_url` redirected to (`location`), when it is
+/// newer than `current`. Its files are next to it under `download/<tag>/`.
+pub fn parse_latest(latest_url: &str, location: &str, current: &str) -> Option<Release> {
+    // Repositories without releases redirect to the release list instead.
+    let tag = location.split_once("/releases/tag/")?.1.split(['?', '#']).next()?.trim_end_matches('/');
     if parse_version(tag).is_none() || !is_newer(tag, current) {
-        return Ok(None);
+        return None;
     }
-    let asset_url = |name: &str| {
-        json["assets"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|asset| asset["name"].as_str() == Some(name))
-            .and_then(|asset| asset["browser_download_url"].as_str().map(String::from))
-    };
-    let asset = asset_name();
-    let binary_url = asset_url(&asset)
-        .ok_or_else(|| Error::other(format!("Release {tag} has no build for this computer ({asset})")))?;
-    let sums_url = asset_url(SUMS_ASSET).ok_or_else(|| Error::other(format!("Release {tag} has no {SUMS_ASSET}")))?;
-    Ok(Some(Release { version: tag.trim_start_matches('v').to_string(), binary_url, sums_url }))
+    let base = latest_url.trim_end_matches('/').trim_end_matches("/latest");
+    let file = |name: &str| format!("{base}/download/{tag}/{name}");
+    Some(Release {
+        version: tag.trim_start_matches('v').to_string(),
+        binary_url: file(&asset_name()),
+        sums_url: file(SUMS_ASSET),
+    })
 }
 
 /// The checksum listed for `name` in a `sha256sum` style file.
@@ -139,11 +140,11 @@ pub fn download_dir() -> PathBuf {
 
 /// Download the release's binary into `dir` and check its checksum.
 pub fn download(release: &Release, dir: &Path) -> Result<PathBuf> {
-    let agent = agent(Duration::from_secs(15 * 60));
+    let agent = agent(Duration::from_secs(15 * 60), 10);
     let sums = String::from_utf8_lossy(&get(&agent, &release.sums_url, 1024 * 1024)?).into_owned();
     let asset = asset_name();
-    let expected =
-        expected_sha256(&sums, &asset).ok_or_else(|| Error::other(format!("{SUMS_ASSET} does not list {asset}")))?;
+    let expected = expected_sha256(&sums, &asset)
+        .ok_or_else(|| Error::other(format!("Release {} has no build for this computer ({asset})", release.version)))?;
     let bytes = get(&agent, &release.binary_url, 256 * 1024 * 1024)?;
     if hex(&Sha256::digest(&bytes)) != expected {
         return Err(Error::other(format!("The download of {} does not match its checksum", release.version)));
@@ -252,7 +253,6 @@ pub fn relaunch(exe: &Path, args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn compares_versions() {
@@ -268,33 +268,22 @@ mod tests {
 
     #[test]
     fn points_at_the_repository() {
-        assert!(
-            latest_release_url().starts_with("https://api.github.com/repos/")
-                || std::env::var_os("T3WOW_UPDATE_URL").is_some()
-        );
-        assert!(latest_release_url().ends_with("/releases/latest"));
-    }
-
-    fn release(tag: &str, assets: &[&str]) -> Value {
-        let assets: Vec<Value> = assets
-            .iter()
-            .map(|name| json!({ "name": name, "browser_download_url": format!("https://example.com/{name}") }))
-            .collect();
-        json!({ "tag_name": tag, "draft": false, "prerelease": false, "assets": assets })
+        if std::env::var_os("T3WOW_UPDATE_URL").is_none() {
+            assert_eq!(latest_release_url(), "https://github.com/DSilence/t3wow/releases/latest");
+        }
     }
 
     #[test]
-    fn picks_this_platforms_asset() {
+    fn follows_the_latest_release_redirect() {
+        let latest = "https://github.com/o/r/releases/latest";
         let asset = asset_name();
-        let found = parse_release(&release("v0.2.0", &[&asset, "SHA256SUMS", "other"]), "0.1.0").unwrap().unwrap();
+        let found = parse_latest(latest, "https://github.com/o/r/releases/tag/v0.2.0", "0.1.0").unwrap();
         assert_eq!(found.version, "0.2.0");
-        assert_eq!(found.binary_url, format!("https://example.com/{asset}"));
-        assert_eq!(found.sums_url, "https://example.com/SHA256SUMS");
-        assert_eq!(parse_release(&release("v0.1.0", &[&asset, "SHA256SUMS"]), "0.1.0").unwrap(), None);
-        assert!(parse_release(&release("v0.2.0", &["SHA256SUMS"]), "0.1.0").is_err());
-        let mut pre = release("v0.2.0", &[&asset, "SHA256SUMS"]);
-        pre["prerelease"] = json!(true);
-        assert_eq!(parse_release(&pre, "0.1.0").unwrap(), None);
+        assert_eq!(found.binary_url, format!("https://github.com/o/r/releases/download/v0.2.0/{asset}"));
+        assert_eq!(found.sums_url, "https://github.com/o/r/releases/download/v0.2.0/SHA256SUMS");
+        assert_eq!(parse_latest(latest, "https://github.com/o/r/releases/tag/v0.1.0", "0.1.0"), None);
+        assert_eq!(parse_latest(latest, "https://github.com/o/r/releases/tag/v0.3.0-rc.1", "0.1.0"), None);
+        assert_eq!(parse_latest(latest, "https://github.com/o/r/releases", "0.1.0"), None);
     }
 
     #[test]
