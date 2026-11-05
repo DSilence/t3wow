@@ -62,7 +62,9 @@ local function ScrollingEditBox(parent, name, font)
   edit:SetMultiLine(true)
   edit:SetAutoFocus(false)
   edit:SetFontObject(font)
-  edit:SetWidth(300)
+  -- A scroll child needs a real size: with no height an empty edit box has no
+  -- valid rect, cannot take keyboard focus, and keys fall through to movement.
+  edit:SetSize(300, 1)
   edit:SetTextInsets(6, 6, 4, 4)
   edit:SetScript("OnEscapePressed", edit.ClearFocus)
   scroll:SetScrollChild(edit)
@@ -746,8 +748,16 @@ function T3:RenderThread()
   end
 
   local composerEnabled = canSend and (self.composeNew or focus.threadId ~= nil)
-  self.composer:EnableMouse(composerEnabled)
-  self.composer:EnableKeyboard(composerEnabled)
+  -- Only touch input when it changes: this runs on every data update, and
+  -- re-enabling keyboard input must not disturb a composer being typed in.
+  if self.composerEnabled ~= composerEnabled then
+    self.composerEnabled = composerEnabled
+    self.composer:EnableMouse(composerEnabled)
+    self.composer:EnableKeyboard(composerEnabled)
+    if not composerEnabled then
+      self.composer:ClearFocus()
+    end
+  end
   self.sendButton:SetEnabled(composerEnabled)
   self.modeButton:SetShown(not self.composeNew)
   self:RenderModelButtons(composerEnabled)
