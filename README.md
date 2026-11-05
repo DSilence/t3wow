@@ -84,8 +84,8 @@ doing and has **Settings…**, **Check for updates**, **Open log** and
   (new addon folders are only picked up at launch).
 - **Live updates:** how many times per game session the addon can pick up
   new data without reloading the UI (see [Why a bridge?](#why-a-bridge)). The
-  default is 300 on macOS and Linux (they share one file) and 50 on Windows
-  (each one is a copy).
+  default is 300. On macOS and Linux they all share one file; on Windows each
+  is a copy the bridge rewrites, so very high numbers make updates slower.
 - **Updates:** see below.
 
 Nothing starts on its own: open the app when you want the bridge. While it
@@ -199,7 +199,7 @@ Settings; the rest are for tuning by hand:
 
 | Key                         | Default | Meaning                                              |
 | --------------------------- | ------- | ---------------------------------------------------- |
-| `liveSlots`                 | 300     | Live updates per UI session (50 on Windows; change it in Settings or with `install --slots`) |
+| `liveSlots`                 | 300     | Live updates per UI session (change it in Settings or with `install --slots`) |
 | `activePollMs`              | 2000    | Poll interval while something runs or is being sent   |
 | `idlePollMs`                | 8000    | Poll interval otherwise                              |
 | `maxProjects`               | 12      | Projects included                                    |

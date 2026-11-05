@@ -42,8 +42,8 @@ impl Default for BridgeConfig {
         Self {
             server_url: None,
             wow_flavor_dirs: Vec::new(),
-            // Slots share one file elsewhere, so many cost nothing; Windows copies each.
-            live_slots: if cfg!(windows) { 50 } else { 300 },
+            // Slots share one file on macOS and Linux; Windows copies the data into each.
+            live_slots: 300,
             oauth_port: 47823,
             active_poll_ms: 2_000,
             idle_poll_ms: 8_000,
