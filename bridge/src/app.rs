@@ -15,6 +15,12 @@ use crate::error::{Error, Result};
 
 pub const APP_NAME: &str = "T3 WoW";
 
+/// Made from `assets/icon/app-icon.svg` by `scripts/make-icons.py`.
+#[cfg(target_os = "macos")]
+const ICNS: &[u8] = include_bytes!("../assets/icon/AppIcon.icns");
+#[cfg(windows)]
+const ICO: &[u8] = include_bytes!("../assets/icon/t3wow.ico");
+
 #[cfg(target_os = "macos")]
 pub fn app_path() -> PathBuf {
     user_home().join("Applications").join(format!("{APP_NAME}.app"))
@@ -59,6 +65,8 @@ fn info_plist() -> String {
   <string>dev.t3wow.tray</string>
   <key>CFBundleExecutable</key>
   <string>t3wow</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -100,6 +108,9 @@ pub fn install() -> Result<PathBuf> {
         fs::set_permissions(&exe, fs::Permissions::from_mode(0o755))?;
     }
     fs::write(app.join("Contents/Info.plist"), info_plist())?;
+    let resources = app.join("Contents/Resources");
+    fs::create_dir_all(&resources)?;
+    fs::write(resources.join("AppIcon.icns"), ICNS)?;
     // An ad-hoc signature keeps macOS from treating the bundle as damaged.
     let _ = Command::new("codesign").args(["--force", "--sign", "-"]).arg(&app).output();
     Ok(app)
@@ -131,13 +142,17 @@ pub fn install() -> Result<PathBuf> {
         fs::copy(&current, &tmp)?;
         fs::rename(&tmp, &exe)?;
     }
+    let ico = exe.with_extension("ico");
+    fs::write(&ico, ICO)?;
     let link = app_path();
     let quote = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
     let script = format!(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath = '{}'; \
-         $s.Arguments = 'tray'; $s.Description = 'T3 Code for World of Warcraft'; $s.Save()",
+         $s.Arguments = 'tray'; $s.Description = 'T3 Code for World of Warcraft'; \
+         $s.IconLocation = '{},0'; $s.Save()",
         quote(&link),
-        quote(&exe)
+        quote(&exe),
+        quote(&ico)
     );
     let status = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).status()?;
     if !status.success() {
@@ -188,5 +203,11 @@ mod tests {
         let plist = info_plist();
         assert!(plist.contains("<key>LSUIElement</key>\n  <true/>"), "no Dock icon");
         assert!(plist.contains("<string>t3wow</string>"));
+        assert!(plist.contains("<key>CFBundleIconFile</key>\n  <string>AppIcon</string>"));
+    }
+
+    #[test]
+    fn embeds_the_app_icon() {
+        assert_eq!(&ICNS[..4], b"icns");
     }
 }

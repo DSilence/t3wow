@@ -65,43 +65,94 @@ fn describe(state: &TrayState) -> String {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Shape {
-    Ring,
-    Disc,
-    RingWithDot,
+    /// An outlined speech bubble: waiting for World of Warcraft.
+    Outline,
+    /// A filled bubble with "…" cut out: syncing.
+    Talking,
+    /// An outlined bubble with a badge: something needs attention.
+    Badge,
 }
 
 fn shape_for(state: &TrayState) -> Shape {
     match state {
-        TrayState::Starting | TrayState::Run(RunState::Waiting) => Shape::Ring,
-        TrayState::Run(RunState::Syncing { .. }) => Shape::Disc,
-        _ => Shape::RingWithDot,
+        TrayState::Starting | TrayState::Run(RunState::Waiting) => Shape::Outline,
+        TrayState::Run(RunState::Syncing { .. }) => Shape::Talking,
+        _ => Shape::Badge,
     }
 }
 
-/// A 32x32 icon drawn in code: a ring while waiting, a disc while syncing, a
-/// ring with a dot when something needs attention.
+type Point = (f32, f32);
+
+/// Signed distance from `p` to a rounded rectangle (left, top, right, bottom);
+/// negative inside.
+fn rounded_rect((x, y): Point, (left, top, right, bottom): (f32, f32, f32, f32), radius: f32) -> f32 {
+    let qx = (x - (left + right) / 2.0).abs() - ((right - left) / 2.0 - radius);
+    let qy = (y - (top + bottom) / 2.0).abs() - ((bottom - top) / 2.0 - radius);
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+}
+
+/// Signed distance from `p` to a triangle; negative inside.
+fn triangle((x, y): Point, corners: [Point; 3]) -> f32 {
+    let mut distance = f32::MAX;
+    let mut sides = [0.0; 3];
+    for i in 0..3 {
+        let (ax, ay) = corners[i];
+        let (bx, by) = corners[(i + 1) % 3];
+        let (ex, ey) = (bx - ax, by - ay);
+        let (wx, wy) = (x - ax, y - ay);
+        let t = ((wx * ex + wy * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+        distance = distance.min((wx - ex * t).hypot(wy - ey * t));
+        sides[i] = ex * wy - ey * wx;
+    }
+    let inside = sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0);
+    if inside { -distance } else { distance }
+}
+
+const ICON_SIZE: usize = 32;
+
 fn icon(shape: Shape) -> Icon {
-    const SIZE: usize = 32;
+    Icon::from_rgba(icon_pixels(shape), ICON_SIZE as u32, ICON_SIZE as u32).expect("valid icon")
+}
+
+/// A 32x32 RGBA speech bubble drawn in code, like the app icon: outlined
+/// while waiting, filled and "talking" while syncing, badged when something
+/// needs attention.
+fn icon_pixels(shape: Shape) -> Vec<u8> {
+    const SIZE: usize = ICON_SIZE;
+    const STROKE: f32 = 2.5;
     // macOS tints template images itself; Windows taskbars are usually dark.
     let rgb: [u8; 3] = if cfg!(target_os = "macos") { [0, 0, 0] } else { [235, 235, 240] };
+    // A solid tail that starts inside the body, so the two join without a seam.
+    let body = (2.0, 4.0, 30.0, 22.0);
+    let hollow = (body.0 + STROKE, body.1 + STROKE, body.2 - STROKE, body.3 - STROKE);
+    let tail = [(9.5, 19.0), (17.5, 19.0), (7.5, 29.0)];
+    let (badge_x, badge_y, badge_r) = (26.0, 6.0, 4.5);
+    // Coverage of a distance field with a one-pixel soft edge.
+    let cover = |distance: f32| (0.5 - distance).clamp(0.0, 1.0);
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    let center = (SIZE as f32 - 1.0) / 2.0;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let d = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
-            // Coverage with a one-pixel soft edge.
-            let inside = |radius: f32| (radius - d + 0.5).clamp(0.0, 1.0);
+    for py in 0..SIZE {
+        for px in 0..SIZE {
+            let p = (px as f32 + 0.5, py as f32 + 0.5);
+            let bubble = rounded_rect(p, body, 6.0).min(triangle(p, tail));
+            let outline = cover(bubble) * (1.0 - cover(rounded_rect(p, hollow, 6.0 - STROKE)));
             let alpha = match shape {
-                Shape::Disc => inside(11.0),
-                Shape::Ring => inside(11.0) - inside(8.0),
-                Shape::RingWithDot => (inside(11.0) - inside(8.0)) + inside(4.0),
+                Shape::Outline => outline,
+                Shape::Talking => {
+                    let dots = [10.0, 16.0, 22.0].into_iter().map(|dx| (p.0 - dx).hypot(p.1 - 13.0) - 2.2);
+                    cover(bubble) * (1.0 - cover(dots.fold(f32::MAX, f32::min)))
+                }
+                Shape::Badge => {
+                    let dot = (p.0 - badge_x).hypot(p.1 - badge_y) - badge_r;
+                    // A gap around the badge keeps it apart from the outline.
+                    (outline * (1.0 - cover(dot - 2.0))).max(cover(dot))
+                }
             };
-            let i = (y * SIZE + x) * 4;
+            let i = (py * SIZE + px) * 4;
             rgba[i..i + 3].copy_from_slice(&rgb);
-            rgba[i + 3] = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+            rgba[i + 3] = (alpha * 255.0).round() as u8;
         }
     }
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("valid icon")
+    rgba
 }
 
 fn open_file(path: &std::path::Path) {
@@ -203,9 +254,9 @@ pub fn run_tray() -> Result<()> {
                 let builder = TrayIconBuilder::new().with_menu(Box::new(menu.take().expect("menu")));
                 // A template image follows the menu bar's light or dark look.
                 #[cfg(target_os = "macos")]
-                let builder = builder.with_icon_templated(icon(Shape::Ring));
+                let builder = builder.with_icon_templated(icon(Shape::Outline));
                 #[cfg(not(target_os = "macos"))]
-                let builder = builder.with_icon(icon(Shape::Ring));
+                let builder = builder.with_icon(icon(Shape::Outline));
                 let built = builder.with_tooltip("T3 WoW").build();
                 match built {
                     Ok(icon) => tray = Some(icon),
@@ -266,5 +317,22 @@ mod tests {
         assert_eq!(describe(&TrayState::Run(RunState::Waiting)), "Waiting for World of Warcraft");
         let long = TrayState::Run(RunState::Error("x".repeat(200)));
         assert!(describe(&long).chars().count() < 80);
+    }
+
+    fn alpha(shape: Shape, x: usize, y: usize) -> u8 {
+        icon_pixels(shape)[(y * ICON_SIZE + x) * 4 + 3]
+    }
+
+    #[test]
+    fn draws_a_speech_bubble_per_state() {
+        // Hollow while waiting, solid with "…" cut out while syncing.
+        assert_eq!(alpha(Shape::Outline, 16, 12), 0);
+        assert_eq!(alpha(Shape::Outline, 3, 12), 255);
+        assert_eq!(alpha(Shape::Talking, 16, 7), 255);
+        assert_eq!(alpha(Shape::Talking, 16, 12), 0);
+        // The tail and the badge.
+        assert_eq!(alpha(Shape::Outline, 10, 24), 255);
+        assert_eq!(alpha(Shape::Badge, 26, 8), 255);
+        assert_eq!(alpha(Shape::Outline, 26, 8), 0);
     }
 }
