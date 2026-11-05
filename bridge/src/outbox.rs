@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::addon_state::{AddonState, Command, OutboxCommand};
 use crate::config::{home_dir, read_json_file, write_json_file};
 use crate::error::{Error, Result};
-use crate::t3::T3Client;
+use crate::t3::{SearchMatch, T3Client};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +24,20 @@ pub struct InstanceProgress {
     /// Highest outbox seq the bridge has finished with (delivered or permanently failed).
     pub ack_seq: i64,
     pub results: Vec<CommandResult>,
+    /// The latest search from this addon install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchResults>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchResults {
+    pub seq: i64,
+    pub query: String,
+    pub matches: Vec<SearchMatch>,
+    /// Why the search failed, when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -33,6 +47,7 @@ struct StateFile {
 }
 
 const MAX_RESULTS: usize = 20;
+const MAX_SEARCH_MATCHES: usize = 30;
 
 fn state_path() -> PathBuf {
     home_dir().join("state.json")
@@ -71,6 +86,20 @@ impl OutboxProcessor {
                 if command.seq <= acked {
                     continue;
                 }
+                if let Command::Search { query } = &command.command {
+                    let search = search(client, command.seq, query)?;
+                    let result = CommandResult {
+                        seq: command.seq,
+                        ok: true,
+                        message: format!("{} matches", search.matches.len()),
+                        thread_id: None,
+                    };
+                    crate::log!("search #{}: {}", command.seq, result.message);
+                    let progress = self.progress.entry(state.instance_id.clone()).or_default();
+                    progress.search = Some(search);
+                    self.finish(&state.instance_id, result)?;
+                    continue;
+                }
                 let result = match execute(client, &state.instance_id, command) {
                     Ok(result) => result,
                     Err(Error::Tool { message, .. }) => {
@@ -89,17 +118,38 @@ impl OutboxProcessor {
                 if let Some(id) = &result.thread_id {
                     touched.push(id.clone());
                 }
-                let progress = self.progress.entry(state.instance_id.clone()).or_default();
-                progress.ack_seq = command.seq;
-                progress.results.push(result);
-                let excess = progress.results.len().saturating_sub(MAX_RESULTS);
-                progress.results.drain(..excess);
-                let file = StateFile { instances: self.progress.clone() };
-                write_json_file(&state_path(), &file, false)?;
+                self.finish(&state.instance_id, result)?;
             }
         }
         Ok(touched)
     }
+
+    /// Record a command as done and persist the progress.
+    fn finish(&mut self, instance_id: &str, result: CommandResult) -> Result<()> {
+        let progress = self.progress.entry(instance_id.to_string()).or_default();
+        progress.ack_seq = result.seq;
+        progress.results.push(result);
+        let excess = progress.results.len().saturating_sub(MAX_RESULTS);
+        progress.results.drain(..excess);
+        let file = StateFile { instances: self.progress.clone() };
+        write_json_file(&state_path(), &file, false)?;
+        Ok(())
+    }
+}
+
+/// A failed search is shown with its results instead of as an undelivered command.
+fn search(client: &mut T3Client, seq: i64, query: &str) -> Result<SearchResults> {
+    let mut results = SearchResults { seq, query: query.to_string(), ..Default::default() };
+    if !client.can_search() {
+        results.error = Some("This T3 Code environment cannot search threads".into());
+        return Ok(results);
+    }
+    match client.search_threads(query, MAX_SEARCH_MATCHES) {
+        Ok(matches) => results.matches = matches,
+        Err(Error::Tool { message, .. }) => results.error = Some(message),
+        Err(error) => return Err(error),
+    }
+    Ok(results)
 }
 
 fn kind(command: &Command) -> &'static str {
@@ -109,6 +159,7 @@ fn kind(command: &Command) -> &'static str {
         Command::Interrupt { .. } => "interrupt",
         Command::Settle { .. } => "settle",
         Command::Answer { .. } => "answer",
+        Command::Search { .. } => "search",
     }
 }
 
@@ -145,6 +196,7 @@ fn execute(client: &mut T3Client, instance_id: &str, command: &OutboxCommand) ->
             client.answer_question(thread_id, question_id, answers)?;
             done("Answer sent", thread_id)
         }
+        Command::Search { .. } => unreachable!("searches are handled in process"),
     })
 }
 

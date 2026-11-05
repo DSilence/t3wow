@@ -108,6 +108,7 @@ pub struct SyncEngine {
     settled: HashMap<String, Vec<ThreadListItem>>,
     settled_at: Option<Instant>,
     can_settle: bool,
+    can_search: bool,
     threads: HashMap<String, ThreadCache>,
     previews: HashMap<String, Preview>,
     catalog: Vec<CatalogProvider>,
@@ -128,6 +129,7 @@ impl SyncEngine {
             settled: HashMap::new(),
             settled_at: None,
             can_settle: false,
+            can_search: false,
             threads: HashMap::new(),
             previews: HashMap::new(),
             catalog: Vec::new(),
@@ -189,6 +191,7 @@ impl SyncEngine {
         }
         self.lists.retain(|id, _| projects.iter().any(|p| p.id == *id));
         self.can_settle = client.can_settle();
+        self.can_search = client.can_search();
         let settled_due = stale(self.settled_at, SETTLED_REFRESH_SECS) || !self.forced.is_empty();
         for project in &projects {
             if settled_due || !self.settled.contains_key(&project.id) {
@@ -508,7 +511,11 @@ impl SyncEngine {
                 .iter()
                 .map(|r| json!({ "seq": r.seq, "ok": r.ok, "message": r.message, "threadId": r.thread_id }))
                 .collect();
-            ack_table.insert(instance_id.clone(), json!({ "seq": progress.ack_seq, "results": results }));
+            let mut ack = json!({ "seq": progress.ack_seq, "results": results });
+            if let Some(search) = &progress.search {
+                ack["search"] = json!(search);
+            }
+            ack_table.insert(instance_id.clone(), ack);
         }
 
         json!({
@@ -518,6 +525,8 @@ impl SyncEngine {
                 "server": bridge.server,
                 "canOperate": bridge.can_operate,
                 "canSettle": bridge.can_operate && self.can_settle,
+                // Searching is read-only, so read-only sign-ins can search too.
+                "canSearch": self.can_search,
                 // Reads commands from screenshots (addon/T3Wow/FastSend.lua).
                 "shots": true,
                 "active": self.active(),

@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
@@ -145,6 +145,19 @@ pub struct ThreadListItem {
     pub settled_at: Option<String>,
 }
 
+/// One hit of `t3_thread_search`: where the query matched, and a snippet for message text.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchMatch {
+    pub thread_id: String,
+    pub project_id: Option<String>,
+    pub title: String,
+    /// `title`, `branch`, `pr`, `project`, `user`, `assistant`...
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ThreadDetail {
@@ -282,6 +295,22 @@ impl T3Client {
     /// Settling needs `t3_thread_organize` (newer environments, operate grants).
     pub fn can_settle(&self) -> bool {
         self.tools.contains("t3_thread_organize")
+    }
+
+    /// Searching needs `t3_thread_search` (newer environments).
+    pub fn can_search(&self) -> bool {
+        self.tools.contains("t3_thread_search")
+    }
+
+    /// Active threads matching `query` by title, branch, PR, project, then message text.
+    pub fn search_threads(&mut self, query: &str, limit: usize) -> Result<Vec<SearchMatch>> {
+        #[derive(Deserialize)]
+        struct Page {
+            #[serde(default)]
+            matches: Vec<SearchMatch>,
+        }
+        let page: Page = self.call("t3_thread_search", json!({ "query": query, "limit": limit }))?;
+        Ok(page.matches)
     }
 
     /// Settle a thread (T3 applies it when a running turn ends), or bring it back.

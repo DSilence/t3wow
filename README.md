@@ -1,222 +1,201 @@
 # T3 Code for World of Warcraft
 
-Talk to your [T3 Code](https://github.com/pingdotgg/t3code) agents from inside
-the game. Browse projects and threads, read the conversation, send messages,
-start new threads, stop a run and answer agent questions. The T3 environment
-can run on any machine: your desktop, a server, or a laptop reachable over
-T3 Connect, Tailscale or your LAN. This works like the T3 mobile app.
+Chat with your [T3 Code](https://github.com/pingdotgg/t3code) agents without leaving the game.
+
+Browse projects and threads, read replies, send messages, start threads, stop a run, and answer agent questions — from inside WoW. It works like the T3 mobile app.
+
+Your T3 environment can be anywhere: this PC, a server, or a laptop reached over T3 Connect, Tailscale, or your LAN.
 
 ```
- WoW (addon)  <-- files -->  t3wow bridge  <-- HTTPS / MCP -->  T3 Code environment
-   T3Wow                    (this computer)                    (T3 Connect, Tailscale, LAN)
+WoW (addon)  <-- files -->  t3wow bridge  <-- HTTPS / MCP -->  T3 Code environment
+  T3Wow                    (this computer)                    (T3 Connect, Tailscale, LAN)
 ```
 
-## Why a bridge?
+## Quick start
 
-WoW addons are sandboxed: they cannot open network connections and cannot
-read files while the game runs. The bridge is a small program (one ~2 MB
-binary, written in Rust) running next to the game. It does the networking and
-exchanges data with the addon through files the game loads:
+1. Make sure the environment runs **T3 Code 0.0.46+** (nightly for now — see [Requirements](#requirements)).
+2. Download the app from the [latest release](https://github.com/DSilence/t3wow/releases/latest) and open it. It installs the app and the WoW addon, then opens **Settings**.
+3. In **Settings**, paste your MCP URL and click **Sign in** (details below).
+4. Start WoW and type `/t3`.
 
-| Direction        | How                                                                                                                                                                                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T3 to game       | The bridge rewrites `T3Wow_Inbox/Data.lua`, which loads with the UI, and the load-on-demand `T3Wow_LiveNNN` addons. Each live addon can be loaded once per UI session, so while the window is open the addon loads the next one every few seconds and gets fresh data **without** `/reload`. |
-| Game to T3       | Commands go into the addon's SavedVariables (`T3WowDB.outbox`). WoW writes SavedVariables only on `/reload` or logout, so the addon **sends by screenshot** instead: it draws the outbox as a grid of colored cells in the top-left corner for a frame or two, takes a screenshot, and the bridge decodes and deletes it. If that fails or the bridge does not answer within 20 seconds, it falls back to reloading the UI, which writes SavedVariables. |
+> New here? Do the steps above first. [How it works](#how-it-works) explains the bridge later — you do not need it to get started.
 
-Each command carries an idempotency key, so it is delivered only once even if
-the bridge restarts. The addon drops it from the outbox when a snapshot
-acknowledges it, and failures show in the thread and in chat.
+## Contents
 
-This uses only what addons may normally do: files loaded at UI load,
-SavedVariables and the screenshot function. Nothing reads game memory, the
-screen, or sends input to the game. `/t3 fastsend off` turns the screenshot
-channel off if you prefer reloads.
+- [Requirements](#requirements)
+- [Install](#install)
+- [Using it in game](#using-it-in-game)
+- [How it works](#how-it-works)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Limitations](#limitations)
+- [License](#license)
 
 ## Requirements
 
-- **The T3 environment must run T3 Code 0.0.46 or newer** (currently
-  nightly). The bridge uses the environment's MCP endpoint for outside
-  agents (`/mcp` with OAuth sign-in), which is not in 0.0.45.
-- The T3 WoW app (macOS, Windows) or the `t3wow` binary (Linux) on the
-  computer that runs WoW (see below).
-- WoW Retail or Classic (TOC lists 1.60.1 / 16001 and current retail and
-  classic versions).
+- **T3 Code 0.0.46 or newer** on the environment. The bridge uses its MCP endpoint for outside agents (`/mcp` with OAuth). That endpoint is not in 0.0.45.
+- The **T3 WoW app** (macOS / Windows) or the `t3wow` binary (Linux) on the PC that runs WoW.
+- **WoW Retail or Classic.**
 
 ## Install
 
-Download the app from the
-[latest release](https://github.com/DSilence/t3wow/releases/latest) and
-double-click it:
+### 1. Download and open the app
 
-- **macOS:** `T3-WoW-macOS.zip` (Apple silicon and Intel). Open the zip, then
-  double-click **T3 WoW**. The app is not notarized by Apple, so the first time
-  macOS refuses to open it: go to **System Settings > Privacy & Security**,
-  scroll down to the message about T3 WoW, and click **Open Anyway**.
-- **Windows:** `T3-WoW-Windows.exe`. If SmartScreen warns about an
-  unrecognized app, click **More info > Run anyway**.
+Get the file for your system from the [latest release](https://github.com/DSilence/t3wow/releases/latest):
 
-Double-clicking installs the **T3 WoW** app (into `~/Applications` on macOS;
-on Windows into `%LOCALAPPDATA%\t3wow`, with a Start Menu entry). It also
-installs the addon into every World of Warcraft folder it finds, then starts
-the app and opens its **Settings**. You can delete the download afterwards.
-Double-clicking a newer download later updates the app in place.
+| System | File | First-open warning |
+| --- | --- | --- |
+| macOS | `T3-WoW-macOS.zip` | Open the zip, double-click **T3 WoW**. If macOS blocks it (the app is not notarized): **System Settings > Privacy & Security** > scroll to the T3 WoW message > **Open Anyway**. |
+| Windows | `T3-WoW-Windows.exe` | If SmartScreen warns: **More info > Run anyway**. |
+| Linux | `t3wow` binary | No tray app — use the [command line](#command-line-and-linux) instead. |
 
-The app lives in the menu bar (macOS) or the notification area (Windows).
-The icon is a ring while waiting for the game, a disc while syncing, and a
-ring with a dot when something needs you. Its menu shows what the bridge is
-doing and has **Settings…**, **Check for updates**, **Open log** and
-**Quit**. Opening the app again while it runs also opens Settings.
+Opening the installer does three things:
 
-### Settings
+1. Installs the **T3 WoW** app — `~/Applications` on macOS, `%LOCALAPPDATA%\t3wow` on Windows (with a Start Menu entry).
+2. Installs the addon into every WoW folder it finds.
+3. Starts the app and opens **Settings**.
 
-- **T3 Code environment:** paste the environment's MCP URL (in T3 Code:
-  **Settings > Connections**, open the environment's menu, **Copy MCP URL**;
-  use the T3 Connect address to reach it from anywhere) and click **Sign in**.
-  The approval page opens in your browser. Enter a pairing code from the host
-  (**Settings > Connections**, or `t3 auth pairing create`) and choose an
-  access level. Pick **Supervised** or higher to send messages; **Read only**
-  lets you watch threads only. Threads started from the game cannot use more
-  permissions than you approve here. The sign-in lasts 30 days.
-- **World of Warcraft:** the game folders (`_retail_`, `_classic_`, ...) the
-  addon is installed in. Tick or untick one to install or remove the addon
-  there, or **Add World of Warcraft folder…** if the game lives somewhere
-  unusual. Changes need the game closed, and a restart of the game after
-  (new addon folders are only picked up at launch).
-- **Live updates:** how many times per game session the addon can pick up
-  new data without reloading the UI (see [Why a bridge?](#why-a-bridge)). The
-  default is 300. On macOS and Linux they all share one file; on Windows each
-  is a copy the bridge rewrites, so very high numbers make updates slower.
-- **Updates:** see below.
+You can delete the download afterwards. Opening a newer download later updates the app in place.
 
-Nothing starts on its own: open the app when you want the bridge. While it
-runs it waits for World of Warcraft, syncs while the game runs, delivers what
-you queued at logout, and goes back to waiting when the game closes. Settings
-changes apply right away, even while the game runs. Only one bridge runs at
-a time. The log is `~/.t3wow/bridge.log`.
+### 2. Connect to your T3 environment
 
-On macOS, if WoW lives on an external drive, the app may need access to it:
-allow **T3 WoW** under **System Settings > Privacy & Security > Files and
-Folders** (or **Full Disk Access**) if Settings or the log says "cannot write".
+In **Settings**:
+
+1. **T3 Code environment** — paste the MCP URL and click **Sign in**.
+   - Find the URL in T3 Code: **Settings > Connections** > open the environment menu > **Copy MCP URL**.
+   - Use the T3 Connect address if you want to reach it from anywhere.
+   - Your browser opens an approval page. Enter a pairing code from the host (**Settings > Connections**, or `t3 auth pairing create`) and pick an access level.
+   - Pick **Supervised** or higher to send messages. **Read only** can only watch threads.
+   - Threads started in game cannot use more permission than you approve here. Sign-in lasts 30 days.
+2. **World of Warcraft** — check the folders (`_retail_`, `_classic_`, …) where the addon should be installed. Uncheck to remove it. Use **Add World of Warcraft folder…** if your game is in an unusual place.
+   - Change this only while the game is closed, then restart the game. WoW only finds new addon folders at launch.
+3. **Live updates** — leave at the default (300). This is how many times per session the addon can refresh without a `/reload` (see [How it works](#how-it-works)). On Windows each update is a copied file, so very high numbers can slow updates down.
+
+### 3. Run it
+
+The app lives in the menu bar (macOS) or notification area (Windows):
+
+- **Ring** = waiting for WoW · **Disc** = syncing · **Ring with a dot** = something needs you.
+- The menu shows bridge status and has **Settings…**, **Check for updates**, **Open log**, and **Quit**.
+- Opening the app again while it runs re-opens Settings.
+
+Nothing starts on its own. Open the app when you want the bridge. While it runs:
+
+- It waits for WoW, syncs while you play, and delivers queued messages when you log out.
+- Settings changes apply right away, even mid-game.
+- Only one bridge runs at a time. The log is at `~/.t3wow/bridge.log`.
+
+> **macOS, WoW on an external drive?** If Settings or the log says “cannot write”, allow **T3 WoW** under **System Settings > Privacy & Security > Files and Folders** (or **Full Disk Access**).
 
 ### Updates
 
-The app keeps itself up to date: shortly after it starts, and every six
-hours after that, it checks for a new release. It downloads it, checks it
-against the release's `SHA256SUMS`, and installs it once World of Warcraft is
-closed (the addon is updated too), then restarts. **Check for updates** in its
-menu or Settings checks right away. Untick **Install updates automatically**
-in Settings to only update when you ask.
+The app updates itself. It checks shortly after start and every 6 hours, verifies the download against the release `SHA256SUMS`, and installs it once WoW is closed (addon included), then restarts. Use **Check for updates** in the menu or Settings to check now. Turn off **Install updates automatically** in Settings to update only manually.
 
 ### Command line and Linux
 
-Every release also has the plain `t3wow` binary for each platform
-(`t3wow-<target>`), which does everything from a terminal. On Linux, where
-there is no tray app, this is how to run it:
+Every release also ships a plain `t3wow` binary (`t3wow-<target>`) that does everything from a terminal. On Linux this is the only option:
 
 ```sh
 curl -fLo ~/.local/bin/t3wow https://github.com/DSilence/t3wow/releases/latest/download/t3wow-x86_64-unknown-linux-gnu
 chmod +x ~/.local/bin/t3wow
 t3wow setup https://<environment-address>/mcp   # sign in and install the addon
-t3wow run --wait-for-wow                        # the bridge, in this terminal
+t3wow run --wait-for-wow                        # run the bridge in this terminal
 ```
 
-`t3wow setup` signs in (`t3wow login <mcp-url>`), installs the addon
-(`t3wow install`, which finds WoW itself or takes `--wow "/path/to/World of
-Warcraft"`, plus `--flavor classic_beta`, `--slots 300`, `--link` to symlink
-this checkout's addon for development, and `--copy-slots`) and, on macOS and
-Windows, the app (`t3wow app install`). `t3wow status` shows the setup,
-`t3wow update` installs the latest release (close the game first; `--check`
-only looks), and plain `t3wow run` syncs right away. `WOW_DIR` names the World
-of Warcraft folder when looking for it.
+Common commands:
 
-Each release lists checksums in `SHA256SUMS`. To build it yourself instead,
-use [Rust](https://rustup.rs): `cargo build --release --manifest-path
-bridge/Cargo.toml` produces `bridge/target/release/t3wow`.
+| Command | What it does |
+| --- | --- |
+| `t3wow setup <mcp-url>` | Sign in + install the addon (+ the tray app on macOS/Windows). |
+| `t3wow login <mcp-url>` | Sign in only. |
+| `t3wow install` | Install the addon only. Finds WoW itself, or use `--wow "/path/to/World of Warcraft"`. |
+| `t3wow status` | Show the current setup. |
+| `t3wow update` | Install the latest release (close WoW first; `--check` only looks). |
+| `t3wow run` | Sync right away. Add `--wait-for-wow` to wait for the game. |
 
-Earlier versions installed a login service instead. Installing the app
-removes it; the app will not sync while it is still there.
+Useful `install` flags: `--flavor classic_beta`, `--slots 300`, `--link` (symlink this checkout’s addon for development), `--copy-slots`. Set `WOW_DIR` to point at your WoW folder when it cannot be found. Checksums for every release are in `SHA256SUMS`.
 
-In game: `/t3` opens the window. You can also bind a key under
-Key Bindings > AddOns.
+To build from source instead, install [Rust](https://rustup.rs), then run `cargo build --release --manifest-path bridge/Cargo.toml`. The binary lands at `bridge/target/release/t3wow`.
 
-## Using it
+> Upgrading from an old version that installed a login service? Installing the app removes it. The bridge will not sync while that service is still present.
 
-- **Left:** projects, then that project's threads (status dot, age, model).
-  Use **+ New** (in a project or on the project list) to start a thread; the
-  **project** button next to the model picks where it runs. The first line of
-  your message becomes its title. Settled threads sit in a collapsed
-  **Settled** section at the bottom of the project; click it to show them.
-- **Header:** **Compact** summarizes the conversation to free the model's
-  context, like `/compact` in T3 Code (it waits for a running turn).
-  **Settle** marks the thread done and moves it to the Settled section (a
-  running thread settles when its turn ends); **Unsettle** brings it back.
-  Needs a T3 Code environment that offers settling.
-- **Right:** the conversation, with Markdown rendered: headings, lists, quotes,
-  code blocks and tables (in a bundled monospace font), bold, italics, inline
-  code and links. **Copy** next to a message opens its text for Ctrl+C;
-  clicking a link does the same for the URL. **Stop** interrupts a running
-  turn. **Answer** replies to an agent question; type an option number or your
-  own text.
-- **Composer:** Ctrl+Enter or **Send**. The **Auto/Queue/Steer** button
-  decides what happens when the agent is already working. The **model** and
-  **reasoning** buttons pick what the thread runs from your next message on
-  (or what a new thread starts with), from the models enabled in T3 Code.
-- **Footer:** bridge status, data age, live updates left, and unsent
-  commands.
-- **Sync** loads the latest data without a reload when it can. It reloads the
-  UI only when it has to: to send queued commands, to load the whole open
-  thread when only a preview is synced, or when the live updates are used up.
-  Shift-click (or `/t3 reload`) always reloads.
+In game, `/t3` opens the window. You can also bind a key under **Key Bindings > AddOns**.
 
-The bridge syncs full messages for the thread you have open, threads you
-opened recently, running threads, and the most recent few. Up to 16 more
-threads (the open project's first) get a preview of their last messages, so
-opening them shows something right away; press Sync to load one in full.
+## Using it in game
 
-**Minimap button:** click to open or close the window, right-click to open
-the latest finished thread, drag to move it. A green dot means something is
-running; the number counts finished threads you have not opened yet.
+Type `/t3` to open the window.
 
-**Notifications:** when a thread finishes (done, failed or stopped) or an
-agent needs your input, you get a chat line, a sound, a flashing taskbar icon
-and a toast under the top of the screen; click the toast to open the thread.
-While something runs, the addon keeps loading live updates every 10 seconds
-even with the window closed, so this works in the background. Threads that
-finished during a reload are noticed too. Finished threads you have not opened
-are marked **new** in the list.
+**Layout**
 
-Slash commands: `/t3 sync`, `/t3 reload`, `/t3 send <text>`, `/t3 compact`,
-`/t3 settle`, `/t3 unsettle`, `/t3 status`,
-`/t3 autoreload on|off` (queue several messages and send them together),
-`/t3 interval <sec>`, `/t3 font <size>`, `/t3 notify on|off`,
-`/t3 sound on|off`, `/t3 minimap on|off`, `/t3 fastsend on|off`, `/t3 clear`,
-`/t3 reset`.
+- **Left — views, projects, and threads.** **Inbox** collects finished threads and questions that need you; **Working** shows busy agents; **Settled** shows threads marked done across projects. **Projects** lets you browse one project at a time. Click **+ New** to start a thread — the first line of your message becomes its title. The **project** button next to the model chooses where a new thread runs.
+- **Search.** Type in the sidebar to filter threads by title, project, model, or branch. Press Enter to search T3 for matching titles, branches, PRs, projects, and messages too (requires an environment with thread search).
+- **Right — the conversation.** Markdown renders in game: headings, lists, quotes, code blocks, tables, **bold**, *italics*, `code`, and links. Click **Copy** next to a message to copy its text (Ctrl+C), or click a link to copy the URL. Click **Stop** to interrupt a running turn. Click **Answer** to reply to an agent question — type an option number or your own text.
+- **Composer (bottom).** Press Ctrl+Enter or **Send** to send. Use **Auto / Queue / Steer** to choose what happens if the agent is already working. Use the **model** and **reasoning** buttons to change what the thread uses from your next message on.
+- **Header.** **Compact** summarizes the conversation to free model context (like `/compact`; it waits for a running turn). **Settle** marks the thread done and moves it to Settled; **Unsettle** brings it back. Settling needs an environment that supports it.
+- **Footer.** Bridge status, how fresh the data is, live updates left, and unsent commands.
 
-Sending by screenshot works in combat too. When it has to fall back to a
-reload, that never happens in combat: the message stays queued until you press
-Sync.
+**Sync** fetches the latest data without reloading when it can. It only reloads the UI when it must: to send queued commands, to fully load a thread that is only previewed, or when live updates run out. Shift-click **Sync** (or `/t3 reload`) to always reload.
+
+The bridge fully syncs the thread you have open, threads you opened recently, running threads, and the most recent few. Up to 16 more threads get a short preview so opening one shows something instantly — press **Sync** to load it in full.
+
+**Minimap button:** click to open/close, right-click to open the latest finished thread, drag to move it. A green dot means something is running; the number counts finished threads you have not opened yet.
+
+**Notifications:** when a thread finishes or an agent needs you, you get a chat line, a sound, a flashing taskbar icon, and a toast at the top of the screen. Click the toast to open the thread. Finished-but-unopened threads are marked **new**. This works with the window closed: while anything runs, the addon refreshes every 10 seconds in the background, and finishes that happen during a reload are still noticed.
+
+**Slash commands**
+
+| Command | What it does |
+| --- | --- |
+| `/t3` | Open or close the window. |
+| `/t3 sync` | Fetch the latest data. |
+| `/t3 reload` | Reload the UI (always). |
+| `/t3 send <text>` | Send a message to the open thread. |
+| `/t3 compact` | Compact the open thread. |
+| `/t3 settle` / `/t3 unsettle` | Mark the open thread done / bring it back. |
+| `/t3 inbox` / `/t3 working` / `/t3 settled` / `/t3 projects` | Switch the sidebar view. |
+| `/t3 search <text>` | Open search with the given text. |
+| `/t3 status` | Show bridge and sync status. |
+| `/t3 autoreload on\|off` | Queue several messages and send them together. |
+| `/t3 interval <sec>` | Set the background refresh interval. |
+| `/t3 font <size>` | Set the font size. |
+| `/t3 notify on\|off` | Turn notifications on or off. |
+| `/t3 sound on\|off` | Turn the notification sound on or off. |
+| `/t3 minimap on\|off` | Show or hide the minimap button. |
+| `/t3 fastsend on\|off` | Turn screenshot sending on or off. |
+| `/t3 clear` | Clear the window. |
+| `/t3 reset` | Reset addon settings. |
+
+Sending works in combat. If a message must fall back to a UI reload, it never reloads in combat — it stays queued until you press **Sync**.
+
+## How it works
+
+WoW addons cannot use the network and cannot read files while the game runs. So a small bridge program (~2 MB, written in Rust) runs next to the game, does the networking, and talks to the addon through files WoW already loads:
+
+- **T3 → game:** the bridge rewrites `T3Wow_Inbox/Data.lua` and a set of load-on-demand `T3Wow_LiveNNN` addons. Each live addon can load once per UI session, so the open window loads the next one every few seconds and stays fresh **without** `/reload`. That is what “live updates” count in Settings.
+- **Game → T3:** normally commands sit in SavedVariables (`T3WowDB.outbox`), but WoW only writes those on `/reload` or logout. So the addon **sends by screenshot** instead: it draws the data as a grid of colored cells in the top-left corner for a frame or two, takes a screenshot, and the bridge reads and deletes it. If that fails, or the bridge does not answer in 20 seconds, it falls back to a UI reload.
+
+Each command carries an idempotency key, so it is delivered exactly once even if the bridge restarts. The addon removes it once a snapshot confirms delivery, and failures appear in the thread and in chat.
+
+This uses only normal addon features: files at UI load, SavedVariables, and screenshots. It does not read game memory or the screen, and it does not send input to the game. Prefer reloads? Run `/t3 fastsend off` to turn screenshot sending off.
 
 ## Configuration
 
-`~/.t3wow/config.json` (written by Settings, `login` and `install`; the
-bridge picks up changes while it runs). The first and last rows are in
-Settings; the rest are for tuning by hand:
+Settings live in `~/.t3wow/config.json`, written by Settings, `login`, and `install`. The bridge picks up changes while it runs. The first and last keys are also in Settings; the rest are for hand-tuning:
 
-| Key                         | Default | Meaning                                              |
-| --------------------------- | ------- | ---------------------------------------------------- |
-| `liveSlots`                 | 300     | Live updates per UI session (change it in Settings or with `install --slots`) |
-| `activePollMs`              | 2000    | Poll interval while something runs or is being sent   |
-| `idlePollMs`                | 8000    | Poll interval otherwise                              |
-| `maxProjects`               | 12      | Projects included                                    |
-| `threadsPerProject`         | 20      | Threads listed per project                           |
-| `recentThreadsWithMessages` | 4       | Recent threads whose messages are always synced      |
-| `messagesPerThread`         | 30      | Messages kept per thread                             |
-| `maxCharsPerMessage`        | 6000    | Longer messages are shortened (open T3 for the rest) |
-| `oauthPort`                 | 47823   | Loopback port for the sign-in redirect               |
-| `autoUpdate`                | true    | The tray app installs new releases on its own        |
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `liveSlots` | 300 | Live updates per UI session (Settings, or `install --slots`). |
+| `activePollMs` | 2000 | Poll interval while something runs or is sending. |
+| `idlePollMs` | 8000 | Poll interval otherwise. |
+| `maxProjects` | 12 | How many projects to include. |
+| `threadsPerProject` | 20 | Threads listed per project. |
+| `recentThreadsWithMessages` | 4 | Recent threads whose messages are always synced. |
+| `messagesPerThread` | 30 | Messages kept per thread. |
+| `maxCharsPerMessage` | 6000 | Longer messages are shortened (open T3 Code for the full text). |
+| `oauthPort` | 47823 | Local port for the sign-in redirect. |
+| `autoUpdate` | true | Let the tray app install new releases on its own. |
 
-The sign-in token is stored in `~/.t3wow/auth.json` (mode 600). Set
-`T3WOW_HOME` to use another directory.
+Your sign-in token is in `~/.t3wow/auth.json` (mode 600). Set `T3WOW_HOME` to use a different folder.
 
 ## Development
 
@@ -232,63 +211,40 @@ pnpm typecheck
 pnpm lint:lua      # Lua 5.1 syntax + accidental globals
 ```
 
-`bridge/tests/e2e.rs` runs the whole loop against a fake T3 MCP server:
-SavedVariables, then bridge, then MCP, then snapshot files, then the real
-addon in Lua 5.1. `bridge/tests/wait_for_wow.rs` covers the tray's wait-for-WoW mode
-(idle while the game is closed, final delivery at logout),
-`bridge/tests/settings_change.rs` settings changing while the game runs, and
-`bridge/tests/settings_window.rs` the commands the Settings page sends. The
-page itself is `bridge/assets/settings.html`, shown in a web view (WKWebView,
-WebView2). `cargo run --manifest-path bridge/Cargo.toml -- tray --settings`
-opens it (set `T3WOW_HOME` and `WOW_DIR` to try it on a scratch setup).
+What the tests cover:
 
-To type-check the Linux and Windows code paths from macOS without a C
-cross-compiler, leave out TLS (its crypto library needs one):
-`cargo clippy --no-default-features --target x86_64-pc-windows-gnu`.
+- `bridge/tests/e2e.rs` — the full loop against a fake T3 MCP server: SavedVariables → bridge → MCP → snapshot files → the real addon in Lua 5.1.
+- `bridge/tests/wait_for_wow.rs` — tray wait-for-WoW mode (idle while the game is closed, final delivery at logout).
+- `bridge/tests/settings_change.rs` — settings changing while the game runs.
+- `bridge/tests/settings_window.rs` — the commands the Settings page sends. The page is `bridge/assets/settings.html`, shown in a web view (WKWebView / WebView2). Try it with `cargo run --manifest-path bridge/Cargo.toml -- tray --settings` (set `T3WOW_HOME` and `WOW_DIR` for a scratch setup).
+
+To type-check the Linux and Windows paths from macOS without a C cross-compiler, skip TLS (its crypto library needs one):
+
+```sh
+cargo clippy --no-default-features --target x86_64-pc-windows-gnu
+```
 
 ### Releasing
 
-CI (`.github/workflows/ci.yml`) runs the bridge tests on macOS, Linux and
-Windows and the addon tests on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs the bridge tests on macOS, Linux, and Windows plus the addon tests on every push and pull request.
 
-To publish a release, run the **Release** workflow from the Actions tab with
-a version, or:
+To publish, run the **Release** workflow from the Actions tab with a version, or:
 
 ```sh
 gh workflow run release.yml -f version=0.2.0
 ```
 
-It bumps the version in `bridge/Cargo.toml`, `Cargo.lock` and `package.json`,
-commits and tags `v0.2.0` on the default branch, builds the bridge for macOS
-(Apple silicon and Intel), Windows and Linux (x86_64 and ARM), and publishes a
-GitHub release with those binaries, the double-clickable `T3-WoW-macOS.zip`
-(a universal app) and `T3-WoW-Windows.exe`, and `SHA256SUMS`. Pushing a `vX.Y.Z` tag
-that matches `bridge/Cargo.toml` releases that commit instead. Installed tray
-apps pick the release up within six hours.
+It bumps the version in `bridge/Cargo.toml`, `Cargo.lock`, and `package.json`, tags `v0.2.0`, builds for macOS (Apple silicon + Intel), Windows, and Linux (x86_64 + ARM), and publishes the binaries, `T3-WoW-macOS.zip`, `T3-WoW-Windows.exe`, and `SHA256SUMS`. Pushing a `vX.Y.Z` tag that matches `bridge/Cargo.toml` releases that commit instead. Installed apps pick the release up within 6 hours.
 
-The asset names (`t3wow-<target>[.exe]`) are what the updater looks for
-(`bridge/src/update.rs`), so keep the two in sync.
+Keep asset names (`t3wow-<target>[.exe]`) in sync with what the updater looks for in `bridge/src/update.rs`.
 
 ## Limitations
 
-- Sending by screenshot briefly shows a colored grid in the top-left corner
-  and costs a short hitch while the image is saved. The screenshot format is
-  switched to JPEG for that moment and restored afterwards. About 2.3 KB fit
-  in one screenshot; longer messages take several. When this channel is off or
-  fails, sending reloads the UI.
-- Tool permission prompts cannot be approved over MCP. Approve the bridge
-  with **Auto** or **Full access** if threads started from the game should
-  run unattended.
-- WoW fonts lack emoji and some scripts. Inline bold and italics are shown as
-  colors (a font string cannot switch fonts mid-line), and rendered text is
-  not selectable: use **Copy**.
-- On macOS and Linux every live slot's `Data.lua` is a symlink to one shared
-  file, so a snapshot is written once however many slots there are. If a game
-  client does not follow the links (live updates never arrive), reinstall with
-  `--copy-slots`. Windows always copies.
-- Live updates via load-on-demand addons need to be verified in each game
-  client. If a client caches addon files, updates still arrive with
-  Sync/`/reload`.
+- **Screenshot sending is visible.** It briefly shows a colored grid in the top-left corner and causes a short hitch while the image saves. The format switches to JPEG for that moment, then restores. About 2.3 KB fits in one screenshot; longer messages use several. With it off (or when it fails), sending reloads the UI.
+- **Tool permission prompts cannot be approved over MCP.** Approve the bridge with **Auto** or **Full access** if game-started threads should run unattended.
+- **WoW fonts are limited.** No emoji and some scripts are missing. Bold and italics appear as colours (one line cannot switch fonts mid-line), and rendered text is not selectable — use **Copy**.
+- **Live updates depend on symlinks on macOS/Linux.** Each slot’s `Data.lua` links to one shared file, so a snapshot is written once. If a client does not follow links (updates never arrive), reinstall with `--copy-slots`. Windows always copies.
+- **Live updates need per-client verification.** If a client caches addon files, updates still arrive via **Sync** or `/reload`.
 
 ## License
 

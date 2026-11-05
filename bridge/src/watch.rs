@@ -93,7 +93,16 @@ mod tests {
         for name in ["World of Warcraft", "Wow.exe", "WowClassic.exe", "WowClassicB.exe", "WowT.exe"] {
             assert!(is_wow_process_name(name), "{name}");
         }
-        for name in ["Battle.net", "Wowup", "World of Warcraft Launcher", "WowLauncher.exe", "WowError.exe", "t3wow", "WowVoiceProxy.exe", "WowVoiceProxy"] {
+        for name in [
+            "Battle.net",
+            "Wowup",
+            "World of Warcraft Launcher",
+            "WowLauncher.exe",
+            "WowError.exe",
+            "t3wow",
+            "WowVoiceProxy.exe",
+            "WowVoiceProxy",
+        ] {
             assert!(!is_wow_process_name(name), "{name}");
         }
     }

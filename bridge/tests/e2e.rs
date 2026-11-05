@@ -236,6 +236,26 @@ fn bridge_end_to_end() {
         assert!(!active.split(',').any(|id| id == "t1"), "{active}");
         assert!(read(&inbox_file).contains("Echo: sent by screenshot"), "the open settled thread keeps its messages");
 
+        // Searches come back with the acks; settled threads are not searched.
+        fs::write(&sv_file, saved_variables(r#"{ ["seq"] = 12, ["kind"] = "search", ["query"] = "BUILD" },"#)).unwrap();
+        wait_for("the search", || read(&inbox_file).contains("seq = 12,").then_some(()));
+        let vm = AddonVm::load(&read(&sv_file));
+        vm.run_addon_file(&read(&inbox_file), "T3Wow_Inbox/Data.lua");
+        vm.run(r#"__stub.fire("ADDON_LOADED", "T3Wow"); __stub.fire("PLAYER_LOGIN")"#);
+        assert_eq!(vm.string("tostring(T3Wow.snapshot.bridge.canSearch)"), "true");
+        assert_eq!(vm.string("T3Wow:SearchResults().query"), "BUILD");
+        let found = vm.string(
+            "(function() local ids = {} for _, m in ipairs(T3Wow:SearchResults().matches) do ids[#ids + 1] = m.threadId .. '/' .. m.source end return table.concat(ids, ',') end)()",
+        );
+        assert_eq!(found, "t3/user", "message text matched");
+        assert_eq!(vm.string("T3Wow:SearchResults().matches[1].snippet"), "Build a raid planner");
+        // Settled threads are not searched; neither is an unknown word.
+        fs::write(&sv_file, saved_variables(r#"{ ["seq"] = 13, ["kind"] = "search", ["query"] = "screenshot" },"#))
+            .unwrap();
+        wait_for("the second search", || read(&inbox_file).contains("seq = 13,").then_some(()));
+        assert!(read(&inbox_file).contains(r#"query = "screenshot""#));
+        assert!(read(&inbox_file).contains("matches = {}"), "settled t1 is not searched");
+
         stop.store(true, Ordering::Relaxed);
         bridge.join().unwrap().unwrap();
     });

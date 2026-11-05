@@ -22,6 +22,7 @@ const TOOLS: &[&str] = &[
     "t3_thread_configuration",
     "t3_thread_configure",
     "t3_thread_organize",
+    "t3_thread_search",
 ];
 
 pub struct Item {
@@ -229,6 +230,27 @@ impl State {
                     }
                     None => failure("thread_not_found", "No such thread"),
                 }
+            }
+            "t3_thread_search" => {
+                // Titles, then message text, of active threads.
+                let query = args["query"].as_str().unwrap_or_default().to_lowercase();
+                let matches: Vec<Value> = self
+                    .threads
+                    .values()
+                    .filter(|t| !t.settled)
+                    .filter_map(|t| {
+                        let mut found = json!({ "threadId": t.thread_id, "projectId": t.project_id, "title": t.title });
+                        if t.title.to_lowercase().contains(&query) {
+                            found["source"] = json!("title");
+                        } else {
+                            let item = t.items.iter().find(|i| i.text.to_lowercase().contains(&query))?;
+                            found["source"] = json!(if item.kind == "user_message" { "user" } else { "assistant" });
+                            found["snippet"] = json!(item.text);
+                        }
+                        Some(found)
+                    })
+                    .collect();
+                Ok(json!({ "matches": matches }))
             }
             "t3_thread_organize" => {
                 self.clock += 1;

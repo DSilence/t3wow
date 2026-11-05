@@ -257,14 +257,123 @@ function T3:CreateSidebar(f)
   nav:SetWordWrap(false)
   self.navTitle = nav
 
+  self:CreateSearchBox(side)
+  self:CreateViewTabs(side)
+
   local scroll = CreateFrame("ScrollFrame", "T3WowList", side, "UIPanelScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", 4, -34)
+  scroll:SetPoint("TOPLEFT", 4, -82)
   scroll:SetPoint("BOTTOMRIGHT", -26, 4)
   local content = CreateFrame("Frame", nil, scroll)
   content:SetSize(SIDEBAR_WIDTH - 30, 10)
   scroll:SetScrollChild(content)
   self.listContent = content
   self.rows = {}
+end
+
+-- Typing filters threads of every project by title, project, model and branch;
+-- Enter also asks T3 to search message text.
+function T3:CreateSearchBox(side)
+  local box = CreateFrame("EditBox", "T3WowSearch", side, "InputBoxTemplate")
+  box:SetPoint("TOPLEFT", 12, -33)
+  box:SetPoint("TOPRIGHT", -8, -33)
+  box:SetHeight(20)
+  box:SetAutoFocus(false)
+  box:SetMaxLetters(100)
+  box:SetTextInsets(0, 18, 0, 0)
+  box:SetText(T3WowDB.ui.search or "")
+
+  local hint = box:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  hint:SetPoint("LEFT", 1, 0)
+  hint:SetText("Search threads")
+  self.searchHint = hint
+
+  local clear = CreateFrame("Button", nil, box)
+  clear:SetSize(16, 16)
+  clear:SetPoint("RIGHT", -2, 0)
+  local x = clear:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  x:SetPoint("CENTER")
+  x:SetText("x")
+  clear:SetScript("OnClick", function()
+    box:SetText("")
+    box:ClearFocus()
+  end)
+  Tooltip(clear, "Clear search")
+  self.searchClear = clear
+
+  box:SetScript("OnTextChanged", function()
+    local text = box:GetText()
+    T3WowDB.ui.search = text ~= "" and text or nil
+    self:RenderList()
+  end)
+  box:SetScript("OnEnterPressed", function()
+    box:ClearFocus()
+    self:Search(box:GetText())
+  end)
+  box:SetScript("OnEscapePressed", function()
+    if box:GetText() ~= "" then
+      box:SetText("")
+    end
+    box:ClearFocus()
+  end)
+  Tooltip(box, "Search", "Type to filter threads of every project by title, project, model or branch. "
+    .. "Press Enter to search message text in T3 too.")
+  self.searchBox = box
+end
+
+-- Inbox, Working, Settled and Projects, like T3 Code's sidebar.
+function T3:CreateViewTabs(side)
+  self.viewTabs = {}
+  local width = (SIDEBAR_WIDTH - 12 - 3 * 2) / #self.VIEWS
+  for index, view in ipairs(self.VIEWS) do
+    local tab = CreateFrame("Button", nil, side)
+    tab:SetSize(width, 20)
+    tab:SetPoint("TOPLEFT", 6 + (index - 1) * (width + 2), -58)
+    tab.bg = tab:CreateTexture(nil, "BACKGROUND")
+    tab.bg:SetAllPoints()
+    tab:SetHighlightTexture("Interface\\Buttons\\WHITE8X8")
+    tab:GetHighlightTexture():SetVertexColor(1, 1, 1, 0.08)
+    tab.label = tab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tab.label:SetPoint("CENTER")
+    tab.label:SetWordWrap(false)
+    tab:SetScript("OnClick", function()
+      self:ShowView(view)
+    end)
+    local tips = {
+      inbox = "Threads waiting on you: finished, or asking a question. Settle a thread to clear it.",
+      working = "Threads an agent is working on right now.",
+      settled = "Threads marked done, newest first.",
+      projects = "Browse threads by project.",
+    }
+    Tooltip(tab, self.VIEW_LABELS[view], tips[view])
+    self.viewTabs[view] = tab
+  end
+end
+
+-- The sidebar view: inbox, working, settled or projects.
+function T3:View()
+  local view = T3WowDB.ui.view
+  return self.VIEW_LABELS[view or ""] and view or "projects"
+end
+
+function T3:ShowView(view)
+  T3WowDB.ui.view = self.VIEW_LABELS[view] and view or "projects"
+  if self.searchBox and self.searchBox:GetText() ~= "" then
+    self.searchBox:SetText("")
+  end
+  if self.frame and not self.frame:IsShown() then
+    self.frame:Show()
+  else
+    self:RenderList()
+  end
+end
+
+-- Open the window with a search; non-empty searches go to T3 for message text too.
+function T3:ShowSearch(text)
+  if not self.frame:IsShown() then
+    self.frame:Show()
+  end
+  self.searchBox:SetText(text or "")
+  self:Search(text)
 end
 
 function T3:Row(index)
@@ -580,99 +689,234 @@ function T3:Refresh()
   self:RenderStatus()
 end
 
-function T3:RenderList()
+-- A sidebar row for a thread. `options`: settled, showProject (cross-project
+-- lists), asking (waits for an answer), note (extra text, like a search snippet).
+function T3:ThreadItem(thread, project, options)
+  options = options or {}
   local db = T3WowDB
-  local focus = db.focus
-  local project = focus.projectId and self:Project(focus.projectId)
-  local items = {}
   local now = time()
-  if project then
-    self.navTitle:SetText(U.Escape(project.title))
-    self.backButton:Show()
-    self.newButton:SetShown(self:CanSend())
-    local function threadItem(thread, settled)
-      local label, color = U.Status(thread.status)
-      local sub = U.Color(color, label) .. "  " .. U.Ago(now, thread.updatedAt)
-      if settled then
-        local ago = U.Ago(now, thread.settledAt or thread.updatedAt)
-        sub = U.Color("808080", ago == "" and "settled" or ago == "now" and "settled just now" or ("settled " .. ago .. " ago"))
+  local status = options.asking and "waiting" or thread.status
+  local label, color = U.Status(status)
+  local sub = U.Color(color, label) .. "  " .. U.Ago(now, thread.updatedAt)
+  if options.settled then
+    local ago = U.Ago(now, thread.settledAt or thread.updatedAt)
+    sub = U.Color("808080", ago == "" and "settled" or ago == "now" and "settled just now" or ("settled " .. ago .. " ago"))
+  end
+  if options.showProject and project then
+    sub = sub .. "  " .. U.Color("a0a0a0", U.Escape(project.title))
+  elseif thread.model and thread.model ~= "" then
+    sub = sub .. "  " .. U.Escape(thread.model)
+  end
+  if options.note then
+    sub = options.note .. "  " .. sub
+  end
+  if db.unread[thread.id] then
+    sub = U.Color("ffd100", "new") .. "  " .. sub
+  end
+  local projectId = project and project.id or thread.projectId
+  return {
+    title = U.Escape(thread.title),
+    sub = sub,
+    color = options.settled and "505060" or color,
+    dim = options.settled,
+    selected = not self.composeNew and thread.id == db.focus.threadId,
+    onClick = function()
+      self.composeNew = false
+      self:Select(projectId, thread.id)
+    end,
+  }
+end
+
+-- A row that only says something.
+local function noteItem(title, sub)
+  return { title = U.Color("a0a0a0", title), sub = sub and U.Color("606070", sub) or "", color = "303040" }
+end
+
+function T3:ProjectItems(project)
+  local db = T3WowDB
+  local items = {}
+  local active, settled = self:ProjectThreads(project)
+  for _, thread in ipairs(active) do
+    table.insert(items, self:ThreadItem(thread, project, { asking = self:NeedsInput(thread.id, thread.status) }))
+  end
+  if #settled > 0 then
+    db.ui.showSettled = db.ui.showSettled or {}
+    local open = db.ui.showSettled[project.id] or false
+    table.insert(items, {
+      title = U.Color("a0a0a0", (open and "- " or "+ ") .. "Settled (" .. #settled .. ")"),
+      sub = U.Color("606070", open and "Click to hide" or "Click to show threads marked done"),
+      color = "303040",
+      onClick = function()
+        db.ui.showSettled[project.id] = not open or nil
+        self:RenderList()
+      end,
+    })
+    if open then
+      for _, thread in ipairs(settled) do
+        table.insert(items, self:ThreadItem(thread, project, { settled = true }))
       end
-      if thread.model and thread.model ~= "" then
-        sub = sub .. "  " .. U.Escape(thread.model)
-      end
-      if db.unread[thread.id] then
-        sub = U.Color("ffd100", "new") .. "  " .. sub
-      end
-      return {
-        title = U.Escape(thread.title),
-        sub = sub,
-        color = settled and "505060" or color,
-        dim = settled,
-        selected = not self.composeNew and thread.id == focus.threadId,
-        onClick = function()
-          self.composeNew = false
-          self:Select(project.id, thread.id)
-        end,
-      }
     end
-    local active, settled = self:ProjectThreads(project)
-    for _, thread in ipairs(active) do
-      table.insert(items, threadItem(thread, false))
+  end
+  return items
+end
+
+function T3:ProjectListItems()
+  local items = {}
+  for _, p in ipairs(self.snapshot and self.snapshot.projects or {}) do
+    local running, unread = 0, 0
+    for _, thread in ipairs(p.threads or {}) do
+      if U.ACTIVE[thread.status] then
+        running = running + 1
+      end
+      if T3WowDB.unread[thread.id] then
+        unread = unread + 1
+      end
     end
-    if #settled > 0 then
-      db.ui.showSettled = db.ui.showSettled or {}
-      local open = db.ui.showSettled[project.id] or false
-      table.insert(items, {
-        title = U.Color("a0a0a0", (open and "- " or "+ ") .. "Settled (" .. #settled .. ")"),
-        sub = U.Color("606070", open and "Click to hide" or "Click to show threads marked done"),
-        color = "303040",
-        onClick = function()
-          db.ui.showSettled[project.id] = not open or nil
-          self:RenderList()
-        end,
-      })
-      if open then
-        for _, thread in ipairs(settled) do
-          table.insert(items, threadItem(thread, true))
+    local sub = #(p.threads or {}) .. " threads"
+    if unread > 0 then
+      sub = sub .. U.Color("ffd100", "  " .. unread .. " new")
+    end
+    if running > 0 then
+      sub = sub .. U.Color("33dd66", "  " .. running .. " running")
+    end
+    table.insert(items, {
+      title = U.Escape(p.title),
+      sub = sub,
+      color = running > 0 and "33dd66" or "606070",
+      onClick = function()
+        if self.composeNew then
+          self:SetNewProject(p.id)
         end
+        self:Select(p.id, nil)
+      end,
+    })
+  end
+  return items
+end
+
+local EMPTY_VIEW = {
+  inbox = { "Inbox zero", "Finished threads wait here until you settle them" },
+  working = { "Nothing running", "Threads an agent works on show up here" },
+  settled = { "Nothing settled", "Settle a finished thread to file it here" },
+}
+
+function T3:ViewItems(view)
+  local items = {}
+  for _, entry in ipairs(self:ViewThreads(view)) do
+    table.insert(items, self:ThreadItem(entry.thread, entry.project,
+      { settled = entry.settled, asking = entry.asking, showProject = true }))
+  end
+  if #items == 0 then
+    local empty = EMPTY_VIEW[view]
+    if view == "settled" and not self:CanSettle() then
+      empty = { "Nothing settled", "Settling needs a newer T3 Code environment" }
+    end
+    table.insert(items, noteItem(empty[1], empty[2]))
+  end
+  return items
+end
+
+local SOURCE_LABELS = { title = "title", branch = "branch", pr = "PR", project = "project", user = "you", assistant = "agent" }
+
+function T3:SearchItems(query)
+  local items = {}
+  local shown = {}
+  for _, entry in ipairs(self:LocalSearch(query)) do
+    shown[entry.thread.id] = true
+    table.insert(items, self:ThreadItem(entry.thread, entry.project, { settled = entry.settled, showProject = true }))
+  end
+  local trimmed = U.Trim(query)
+  local results = self:SearchResults()
+  if not self:CanSearch() then
+    if #items == 0 then
+      table.insert(items, noteItem("No matching threads", "Titles, projects, models and branches are searched"))
+    end
+  elseif self:SearchPending(trimmed) then
+    table.insert(items, noteItem("Searching messages in T3...", "Results arrive with the next update"))
+  elseif results and results.query == trimmed then
+    if results.error then
+      table.insert(items, noteItem("Search failed", U.Escape(results.error)))
+    else
+      local more = {}
+      for _, match in ipairs(results.matches or {}) do
+        if not shown[match.threadId] then
+          shown[match.threadId] = true
+          table.insert(more, match)
+        end
+      end
+      table.insert(items, noteItem(#more > 0 and ("Also in T3 (" .. #more .. ")") or
+        (#items > 0 and "No more matches in T3" or "No matches in T3"),
+        "Searched titles, branches, PRs, projects and messages"))
+      for _, match in ipairs(more) do
+        local thread, project, settled = self:ThreadSummary(match.threadId)
+        project = project or self:Project(match.projectId)
+        local note
+        if match.snippet and match.snippet ~= "" then
+          note = U.Color("c0c0c0", U.Escape(U.Truncate((match.snippet:gsub("%s+", " ")), 80)))
+        else
+          note = U.Color("808080", "in " .. (SOURCE_LABELS[match.source] or U.Escape(match.source or "")))
+        end
+        thread = thread or { id = match.threadId, title = match.title, projectId = match.projectId }
+        table.insert(items, self:ThreadItem(thread, project, { settled = settled, showProject = true, note = note }))
       end
     end
   else
-    self.navTitle:SetText("Projects")
-    self.backButton:Hide()
-    self.newButton:SetShown(self:CanSend() and #(self.snapshot and self.snapshot.projects or {}) > 0)
-    for _, p in ipairs(self.snapshot and self.snapshot.projects or {}) do
-      local running = 0
-      for _, thread in ipairs(p.threads or {}) do
-        if U.ACTIVE[thread.status] then
-          running = running + 1
-        end
-      end
-      local sub = #(p.threads or {}) .. " threads"
-      local unread = 0
-      for _, thread in ipairs(p.threads or {}) do
-        if T3WowDB.unread[thread.id] then
-          unread = unread + 1
-        end
-      end
-      if unread > 0 then
-        sub = sub .. U.Color("ffd100", "  " .. unread .. " new")
-      end
-      if running > 0 then
-        sub = sub .. U.Color("33dd66", "  " .. running .. " running")
-      end
-      table.insert(items, {
-        title = U.Escape(p.title),
-        sub = sub,
-        color = running > 0 and "33dd66" or "606070",
-        onClick = function()
-          if self.composeNew then
-            self:SetNewProject(p.id)
-          end
-          self:Select(p.id, nil)
-        end,
-      })
+    table.insert(items, {
+      title = U.Color("8fb8ff", (#items == 0 and "No titles match. " or "") .. "Search messages too"),
+      sub = U.Color("606070", "Press Enter or click to search T3"),
+      color = "305080",
+      onClick = function()
+        self:Search(query)
+      end,
+    })
+  end
+  return items
+end
+
+function T3:RenderViewTabs(view)
+  local counts = { inbox = #self:ViewThreads("inbox"), working = #self:ViewThreads("working") }
+  for name, tab in pairs(self.viewTabs) do
+    local text = self.VIEW_LABELS[name]
+    if counts[name] and counts[name] > 0 then
+      text = text .. " " .. counts[name]
     end
+    tab.label:SetText(text)
+    local active = name == view
+    tab.bg:SetColorTexture(0.35, 0.55, 1, active and 0.28 or 0.06)
+    if active then
+      tab.label:SetTextColor(1, 1, 1)
+    else
+      tab.label:SetTextColor(0.7, 0.7, 0.75)
+    end
+  end
+end
+
+function T3:RenderList()
+  local db = T3WowDB
+  local focus = db.focus
+  local view = self:View()
+  local query = self.searchBox and self.searchBox:GetText() or ""
+  local hasProjects = #(self.snapshot and self.snapshot.projects or {}) > 0
+  self.searchHint:SetShown(query == "")
+  self.searchClear:SetShown(query ~= "")
+  self:RenderViewTabs(query == "" and view or nil)
+  local project = view == "projects" and focus.projectId and self:Project(focus.projectId)
+  self.backButton:SetShown(project and query == "" and true or false)
+  self.newButton:SetShown(self:CanSend() and hasProjects)
+
+  local items
+  if query ~= "" then
+    self.navTitle:SetText("Search")
+    items = self:SearchItems(query)
+  elseif view ~= "projects" then
+    self.navTitle:SetText(self.VIEW_LABELS[view])
+    items = self:ViewItems(view)
+  elseif project then
+    self.navTitle:SetText(U.Escape(project.title))
+    items = self:ProjectItems(project)
+  else
+    self.navTitle:SetText("Projects")
+    items = self:ProjectListItems()
   end
 
   for index, item in ipairs(items) do

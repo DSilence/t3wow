@@ -329,7 +329,7 @@ describe("addon", () => {
       "launch:p1:Build a raid planner",
     );
     const instanceId = vm.run(`return T3WowDB.instanceId`) as string;
-    const acks = { [instanceId]: { seq: 1, results: [{ seq: 1, ok: true, message: "Thread started", threadId: "t9" }] } };
+    const acks: LuaValue = { [instanceId]: { seq: 1, results: [{ seq: 1, ok: true, message: "Thread started", threadId: "t9" }] } };
     vm.runAddonFile(dataChunk(snapshot({ projects: PROJECTS, threads: THREADS, acks }, 2), "live"), "live.lua");
     assert.equal(vm.run(`return T3WowDB.focus.threadId`), "t9");
     assert.equal(vm.run(`return #T3WowDB.outbox`), 0);
@@ -513,6 +513,154 @@ describe("settling", () => {
     vm.run(`T3Wow:Toggle(); T3Wow:Select("p1", "t1")`);
     assert.equal(vm.run(`return T3Wow.settleButton:IsShown()`), false);
     vm.run(`SlashCmdList.T3WOW("settle")`);
+    assert.equal(vm.run(`return #T3WowDB.outbox`), 0);
+  });
+});
+
+describe("inbox, working and settled", () => {
+  const VIEW_PROJECTS: LuaValue = [
+    {
+      id: "p1",
+      title: "Game | Tools",
+      threads: [
+        { id: "t1", title: "Fix the | pipe", status: "running", updatedAt: NOW - 30, model: "claude-opus-5-5", provider: "claudeAgent" },
+        { id: "t2", title: "Older", status: "completed", updatedAt: NOW - 7200 },
+      ],
+      settled: [{ id: "t3", title: "Shipped", status: "completed", updatedAt: NOW - 600, settledAt: NOW - 600 }],
+    },
+    {
+      id: "p2",
+      title: "Website",
+      threads: [
+        { id: "t5", title: "Build the landing page", status: "running", updatedAt: NOW - 10 },
+        { id: "t6", title: "Fix the footer", status: "failed", updatedAt: NOW - 300 },
+      ],
+      settled: [{ id: "t7", title: "Old blog", status: "completed", updatedAt: NOW - 90000, settledAt: NOW - 60 }],
+    },
+  ];
+  const withViews = (bridge: Record<string, LuaValue> = {}, extra: Record<string, LuaValue> = {}, seq = 1) =>
+    snapshot({
+      projects: VIEW_PROJECTS,
+      threads: THREADS,
+      bridge: { status: "ok", server: "env.example", canOperate: true, canSettle: true, canSearch: true, ...bridge },
+      ...extra,
+    }, seq);
+  const rowTitles = (vm: LuaVM) =>
+    (vm.run(`local t = {} for _, r in ipairs(T3Wow.rows) do if r:IsShown() then t[#t + 1] = r.title:GetText() end end
+      return table.concat(t, "\\n")`) as string).split("\n");
+  const tab = (vm: LuaVM, view: string) => vm.run(`return T3Wow.viewTabs.${view}.label:GetText()`);
+
+  it("puts threads waiting on you in the inbox, questions first", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`T3Wow:Toggle(); T3Wow.viewTabs.inbox:Click()`);
+    assert.equal(vm.run(`return T3Wow.navTitle:GetText()`), "Inbox");
+    // t1 runs but asks a question; t5 is still working; settled threads stay out.
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "Fix the footer", "Older"]);
+    assert.match(vm.run(`return T3Wow.rows[1].sub:GetText()`) as string, /Needs input.*Game \|\| Tools/);
+    assert.match(vm.run(`return T3Wow.rows[2].sub:GetText()`) as string, /Failed.*Website/);
+    assert.equal(tab(vm, "inbox"), "Inbox 3");
+    assert.equal(tab(vm, "working"), "Working 1");
+    assert.equal(tab(vm, "settled"), "Settled");
+  });
+
+  it("lists working and settled threads of every project", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`T3Wow:Toggle(); T3Wow.viewTabs.working:Click()`);
+    assert.deepEqual(rowTitles(vm), ["Build the landing page"]);
+    vm.run(`T3Wow.viewTabs.settled:Click()`);
+    // Newest settled first, whatever their age.
+    assert.deepEqual(rowTitles(vm), ["Old blog", "Shipped"]);
+    assert.match(vm.run(`return T3Wow.rows[1].sub:GetText()`) as string, /settled 1m ago.*Website/);
+  });
+
+  it("opens a thread from a view and remembers the view", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`T3Wow:Toggle(); T3Wow.viewTabs.inbox:Click(); T3Wow.rows[2]:Click()`);
+    assert.equal(vm.run(`return T3WowDB.focus.projectId .. ":" .. T3WowDB.focus.threadId`), "p2:t6");
+    assert.equal(vm.run(`return T3Wow.navTitle:GetText()`), "Inbox");
+    assert.equal(vm.run(`return T3WowDB.ui.view`), "inbox");
+    // Projects goes to the open thread's project.
+    vm.run(`T3Wow.viewTabs.projects:Click()`);
+    assert.equal(vm.run(`return T3Wow.navTitle:GetText()`), "Website");
+  });
+
+  it("moves a settled thread out of the inbox before the bridge confirms", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`T3Wow:Toggle(); T3Wow.viewTabs.inbox:Click(); T3Wow.rows[3]:Click(); T3Wow.settleButton:Click()`);
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "Fix the footer"]);
+    vm.run(`T3Wow.viewTabs.settled:Click()`);
+    assert.equal(rowTitles(vm)[0], "Older");
+  });
+
+  it("says when a view is empty", () => {
+    const vm = boot({ inbox: snapshot({ projects: [{ id: "p1", title: "P", threads: [] }] }) });
+    vm.run(`T3Wow:Toggle(); T3Wow.viewTabs.working:Click()`);
+    assert.deepEqual(rowTitles(vm), ["|cffa0a0a0Nothing running|r"]);
+    vm.run(`T3Wow.rows[1]:Click()`);
+  });
+
+  it("switches views with slash commands", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`SlashCmdList.T3WOW("working")`);
+    assert.equal(vm.run(`return T3Wow.frame:IsShown()`), true);
+    assert.deepEqual(rowTitles(vm), ["Build the landing page"]);
+  });
+
+  it("filters threads of every project as you type", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`T3Wow:Toggle(); T3WowSearch:SetText("fix")`);
+    assert.equal(vm.run(`return T3Wow.navTitle:GetText()`), "Search");
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "Fix the footer", "|cff8fb8ffSearch messages too|r"]);
+    // Project names and settled threads match too.
+    vm.run(`T3WowSearch:SetText("website")`);
+    assert.deepEqual(rowTitles(vm).slice(0, 3), ["Build the landing page", "Fix the footer", "Old blog"]);
+    assert.equal(vm.run(`return T3WowDB.ui.search`), "website");
+    vm.run(`T3Wow.searchClear:Click()`);
+    assert.equal(vm.run(`return T3WowDB.ui.search == nil`), true);
+    assert.equal(vm.run(`return T3Wow.navTitle:GetText()`), "Projects");
+  });
+
+  it("asks T3 to search messages and shows what it found", () => {
+    const vm = boot({ inbox: withViews(), liveSlots: 3 });
+    vm.run(`T3Wow:Toggle(); T3WowSearch:SetText("pipe")`);
+    vm.run(`T3WowSearch:GetScript("OnEnterPressed")(T3WowSearch)`);
+    assert.equal(vm.run(`local c = T3WowDB.outbox[1]; return c.kind .. ":" .. c.query`), "search:pipe");
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "|cffa0a0a0Searching messages in T3...|r"]);
+    // Enter again does not search twice.
+    vm.run(`T3WowSearch:GetScript("OnEnterPressed")(T3WowSearch)`);
+    assert.equal(vm.run(`return #T3WowDB.outbox`), 1);
+
+    const instanceId = vm.run(`return T3WowDB.instanceId`) as string;
+    const matches: LuaValue = [
+      { threadId: "t1", projectId: "p1", title: "Fix the | pipe", source: "title" },
+      { threadId: "t9", projectId: "p2", title: "Plumbing", source: "assistant", snippet: "the pipe\nleaks here" },
+    ];
+    const acks: LuaValue = { [instanceId]: { seq: 1, results: [{ seq: 1, ok: true, message: "2 matches" }], search: { seq: 1, query: "pipe", matches } } };
+    vm.runAddonFile(dataChunk(withViews({}, { acks }, 2), "live"), "live.lua");
+    assert.deepEqual(rowTitles(vm), ["Fix the || pipe", "|cffa0a0a0Also in T3 (1)|r", "Plumbing"]);
+    assert.match(vm.run(`return T3Wow.rows[3].sub:GetText()`) as string, /the pipe leaks here.*Website/);
+    vm.run(`T3Wow.rows[3]:Click()`);
+    assert.equal(vm.run(`return T3WowDB.focus.projectId .. ":" .. T3WowDB.focus.threadId`), "p2:t9");
+    // Another query offers a new search.
+    vm.run(`T3WowSearch:SetText("pip")`);
+    assert.equal(rowTitles(vm).at(-1), "|cff8fb8ffSearch messages too|r");
+  });
+
+  it("shows a failed search", () => {
+    const vm = boot({ inbox: withViews() });
+    vm.run(`T3Wow:Toggle(); T3WowSearch:SetText("zzz")`);
+    assert.deepEqual(rowTitles(vm), ["|cff8fb8ffNo titles match. Search messages too|r"]);
+    const instanceId = vm.run(`return T3WowDB.instanceId`) as string;
+    const acks: LuaValue = { [instanceId]: { seq: 0, results: [], search: { seq: 1, query: "zzz", matches: [], error: "no | way" } } };
+    vm.runAddonFile(dataChunk(withViews({}, { acks }, 2), "live"), "live.lua");
+    assert.deepEqual(rowTitles(vm), ["|cffa0a0a0Search failed|r"]);
+    assert.match(vm.run(`return T3Wow.rows[1].sub:GetText()`) as string, /no \|\| way/);
+  });
+
+  it("only filters by title when the bridge cannot search", () => {
+    const vm = boot({ inbox: withViews({ canSearch: false }) });
+    vm.run(`T3Wow:Toggle(); SlashCmdList.T3WOW("search zzz")`);
+    assert.deepEqual(rowTitles(vm), ["|cffa0a0a0No matching threads|r"]);
     assert.equal(vm.run(`return #T3WowDB.outbox`), 0);
   });
 });
@@ -738,7 +886,7 @@ describe("new thread project", () => {
     assert.equal(vm.run(`local c = T3WowDB.outbox[1]; return c.kind .. ":" .. c.projectId`), "launch:p2");
     // Once started, the new thread opens in its project.
     const instanceId = vm.run(`return T3WowDB.instanceId`) as string;
-    const acks = { [instanceId]: { seq: 1, results: [{ seq: 1, ok: true, message: "Thread started", threadId: "t9" }] } };
+    const acks: LuaValue = { [instanceId]: { seq: 1, results: [{ seq: 1, ok: true, message: "Thread started", threadId: "t9" }] } };
     vm.runAddonFile(dataChunk(snapshot({ projects: TWO_PROJECTS, threads: THREADS, acks }, 2), "live"), "live.lua");
     assert.equal(vm.run(`return T3WowDB.focus.projectId .. ":" .. T3WowDB.focus.threadId`), "p2:t9");
   });

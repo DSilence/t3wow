@@ -215,15 +215,16 @@ function T3:ThreadSummary(threadId)
   end
 end
 
--- The latest settle or unsettle waiting in the outbox for a thread: true, false or nil.
+-- The latest settle or unsettle waiting in the outbox for a thread: true,
+-- false or nil, and when the player asked for it.
 function T3:PendingSettle(threadId)
-  local settled
+  local settled, at
   for _, command in ipairs(T3WowDB.outbox) do
     if command.kind == "settle" and command.threadId == threadId then
-      settled = command.settled
+      settled, at = command.settled, command.at
     end
   end
-  return settled
+  return settled, at
 end
 
 -- Whether a thread is settled, counting a settle the bridge has not done yet.
@@ -241,8 +242,12 @@ end
 function T3:ProjectThreads(project)
   local active, settled = {}, {}
   local function place(thread, wasSettled)
-    local pending = self:PendingSettle(thread.id)
+    local pending, at = self:PendingSettle(thread.id)
     local isSettled = pending == nil and wasSettled or pending == true
+    if isSettled and not wasSettled then
+      -- Settled just now: sort and label it that way.
+      thread = setmetatable({ settledAt = at }, { __index = thread })
+    end
     table.insert(isSettled and settled or active, thread)
   end
   for _, thread in ipairs(project.threads or {}) do
@@ -263,6 +268,134 @@ function T3:ProjectThreads(project)
   table.sort(active, newestBy("updatedAt"))
   table.sort(settled, newestBy("settledAt"))
   return active, settled
+end
+
+-- Whether a thread waits for the player to answer a question.
+function T3:NeedsInput(threadId, status)
+  local thread = self:Thread(threadId)
+  if thread and ((thread.questions and #thread.questions > 0) or (thread.pending or 0) > 0) then
+    return true
+  end
+  return status == "waiting"
+end
+
+-- The cross-project views, like T3 Code's sidebar:
+--   inbox   - active threads waiting on the player: finished, or asking a question
+--   working - active threads the agent is busy with
+--   settled - threads marked done
+T3.VIEWS = { "inbox", "working", "settled", "projects" }
+T3.VIEW_LABELS = { inbox = "Inbox", working = "Working", settled = "Settled", projects = "Projects" }
+
+-- Threads of every project for a view, as { thread, project, settled } entries.
+function T3:ViewThreads(view)
+  local db = T3WowDB
+  local entries = {}
+  for _, project in ipairs(self.snapshot and self.snapshot.projects or {}) do
+    local active, settled = self:ProjectThreads(project)
+    if view == "settled" then
+      for _, thread in ipairs(settled) do
+        table.insert(entries, { thread = thread, project = project, settled = true })
+      end
+    else
+      for _, thread in ipairs(active) do
+        local asking = self:NeedsInput(thread.id, thread.status)
+        local working = U.ACTIVE[thread.status] and not asking
+        if (view == "working") == (working and true or false) then
+          table.insert(entries, { thread = thread, project = project, asking = asking })
+        end
+      end
+    end
+  end
+  local function at(entry)
+    local thread = entry.thread
+    return view == "settled" and (thread.settledAt or thread.updatedAt or 0) or (thread.updatedAt or 0)
+  end
+  table.sort(entries, function(a, b)
+    if view == "inbox" then
+      -- Questions first, then what finished since the player last looked.
+      local x = (a.asking and 2 or 0) + (db.unread[a.thread.id] and 1 or 0)
+      local y = (b.asking and 2 or 0) + (db.unread[b.thread.id] and 1 or 0)
+      if x ~= y then
+        return x > y
+      end
+    end
+    if at(a) ~= at(b) then
+      return at(a) > at(b)
+    end
+    return a.thread.id < b.thread.id
+  end)
+  return entries
+end
+
+---------------------------------------------------------------------------
+-- Search
+---------------------------------------------------------------------------
+
+-- Threads whose title, project, model or branch contain the query (no bridge
+-- needed), active ones first, as { thread, project, settled } entries.
+function T3:LocalSearch(query)
+  local needle = U.Trim(query or ""):lower()
+  local found = {}
+  if needle == "" then
+    return found
+  end
+  local function matches(...)
+    for i = 1, select("#", ...) do
+      local text = select(i, ...)
+      if type(text) == "string" and text:lower():find(needle, 1, true) then
+        return true
+      end
+    end
+  end
+  for _, settledPass in ipairs({ false, true }) do
+    for _, project in ipairs(self.snapshot and self.snapshot.projects or {}) do
+      local active, settled = self:ProjectThreads(project)
+      for _, thread in ipairs(settledPass and settled or active) do
+        local detail = self:Thread(thread.id)
+        if matches(thread.title, project.title, thread.model, detail and detail.branch) then
+          table.insert(found, { thread = thread, project = project, settled = settledPass })
+        end
+      end
+    end
+  end
+  return found
+end
+
+-- The environment searches message text too; older bridges cannot.
+function T3:CanSearch()
+  local bridge = self.snapshot and self.snapshot.bridge
+  return bridge ~= nil and bridge.canSearch == true
+end
+
+-- Ask the bridge to search T3 (titles, branches, PRs, projects, messages).
+function T3:Search(query)
+  query = U.Trim(query or "")
+  if query == "" or not self:CanSearch() then
+    return
+  end
+  for _, command in ipairs(T3WowDB.outbox) do
+    if command.kind == "search" and command.query == query then
+      return command
+    end
+  end
+  return self:Enqueue({ kind = "search", query = query })
+end
+
+-- The bridge's latest search results for this install: { query, matches, error }.
+function T3:SearchResults()
+  local ack = self:Acks()
+  return ack and ack.search
+end
+
+-- Whether a search for the query is still on its way to the bridge.
+function T3:SearchPending(query)
+  query = U.Trim(query or "")
+  for _, command in ipairs(T3WowDB.outbox) do
+    if command.kind == "search" and command.query == query then
+      return true
+    end
+  end
+  return false
 end
 
 function T3:BridgeState()
@@ -736,6 +869,10 @@ SlashCmdList.T3WOW = function(input)
     else
       T3:SendMessage(threadId, rest)
     end
+  elseif T3.VIEW_LABELS[command] then
+    T3:ShowView(command)
+  elseif command == "search" then
+    T3:ShowSearch(rest)
   elseif command == "autoreload" then
     settings.autoReload = rest ~= "off"
     T3:Print("Reload after sending: " .. (settings.autoReload and "on" or "off"))
@@ -783,6 +920,6 @@ SlashCmdList.T3WOW = function(input)
     T3:Print(string.format("bridge %s%s, live updates left %d/%d, unsent %d", state,
       message and (": " .. message) or "", T3:LiveRemaining(), T3.liveSlots, #T3WowDB.outbox))
   else
-    T3:Print("/t3 - toggle window | /t3 sync | /t3 reload | /t3 send <text> | /t3 compact | /t3 settle | /t3 unsettle | /t3 status | /t3 autoreload on|off | /t3 interval <sec> | /t3 font <size> | /t3 notify on|off | /t3 sound on|off | /t3 minimap on|off | /t3 fastsend on|off | /t3 clear | /t3 reset")
+    T3:Print("/t3 - toggle window | /t3 sync | /t3 reload | /t3 send <text> | /t3 compact | /t3 settle | /t3 unsettle | /t3 inbox|working|settled|projects | /t3 search <text> | /t3 status | /t3 autoreload on|off | /t3 interval <sec> | /t3 font <size> | /t3 notify on|off | /t3 sound on|off | /t3 minimap on|off | /t3 fastsend on|off | /t3 clear | /t3 reset")
   end
 end

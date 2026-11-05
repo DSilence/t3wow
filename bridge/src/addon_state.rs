@@ -33,6 +33,10 @@ pub enum Command {
         thread_id: String,
         settled: bool,
     },
+    /// Search threads (titles, branches, PRs, projects, message text); results come back with the acks.
+    Search {
+        query: String,
+    },
     /// Answers keyed by question id: text, or a list of texts for a multi-select question.
     Answer {
         thread_id: String,
@@ -110,6 +114,7 @@ fn parse_command(raw: &Value) -> Option<OutboxCommand> {
         "settle" => {
             Command::Settle { thread_id: str_of(&raw["threadId"])?, settled: raw["settled"].as_bool().unwrap_or(true) }
         }
+        "search" => Command::Search { query: str_of(&raw["query"])? },
         "answer" => {
             let answers = raw["answers"]
                 .as_object()
@@ -229,6 +234,7 @@ T3WowDB = {
 { ["seq"] = 7, ["kind"] = "send", ["threadId"] = "t1", ["text"] = "hi" },
 { ["seq"] = 8, ["kind"] = "send", ["threadId"] = "t1" },
 { ["seq"] = 11, ["kind"] = "settle", ["threadId"] = "t1", ["settled"] = false },
+{ ["seq"] = 12, ["kind"] = "search", ["query"] = "raid planner" },
 { ["seq"] = 10, ["kind"] = "answer", ["threadId"] = "t1", ["requestId"] = "r1",
   ["answers"] = { ["q1"] = "Yes", ["q2"] = { "a", "b" }, ["q3"] = 5 } },
 },
@@ -240,10 +246,11 @@ T3WowDB = {
         assert_eq!(state.instance_id, "inst-1");
         assert_eq!(
             state.outbox.iter().map(|c| c.seq).collect::<Vec<_>>(),
-            [7, 9, 10, 11],
+            [7, 9, 10, 11, 12],
             "invalid commands are dropped"
         );
         assert_eq!(state.outbox[3].command, Command::Settle { thread_id: "t1".into(), settled: false });
+        assert_eq!(state.outbox[4].command, Command::Search { query: "raid planner".into() });
         assert_eq!(
             state.outbox[0].command,
             Command::Send { thread_id: "t1".into(), text: "hi".into(), mode: "auto".into(), model: None }

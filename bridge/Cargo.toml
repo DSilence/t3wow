@@ -36,6 +36,7 @@ tray-icon = "0.26.1"
 # The settings window (WKWebView, WebView2) and its folder picker.
 wry = { version = "0.57.1", default-features = false }
 rfd = { version = "0.17.2", default-features = false }
+global-hotkey = "0.9"
 
 # Start Menu shortcut and opening links without PowerShell or rundll32.
 [target.'cfg(windows)'.dependencies]
@@ -46,6 +47,14 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6", default-features = false }
+objc2 = { version = "0.6", default-features = false }
+objc2-av-foundation = { version = "0.3", default-features = false }
+objc2-avf-audio = { version = "0.3", default-features = false }
+objc2-foundation = { version = "0.3", default-features = false }
+objc2-speech = { version = "0.3", default-features = false }
 
 # Version info, icon and manifest in t3wow.exe (build.rs).
 [build-dependencies]
