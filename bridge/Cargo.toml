@@ -1,6 +1,6 @@
 [package]
 name = "t3wow"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Drive a remote T3 Code environment from inside World of Warcraft"
 license = "MIT"
