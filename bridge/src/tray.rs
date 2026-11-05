@@ -23,7 +23,7 @@ use crate::service;
 use crate::settings::{Action, Settings, TrayInfo};
 use crate::setup;
 use crate::update;
-use crate::watch::wow_running;
+use crate::watch::{wow_process, wow_running};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 /// "Check for updates" was clicked.
@@ -160,8 +160,18 @@ fn run_updater(update: Arc<Mutex<UpdateState>>, bridge: Arc<Mutex<TrayState>>) {
             }
         };
         set(UpdateState::Ready(version.clone()));
-        let busy = || wow_running() || matches!(*bridge.lock().unwrap(), TrayState::Run(RunState::Syncing { .. }));
-        while busy() && !STOP.load(Ordering::Relaxed) {
+        let mut waiting_on = None;
+        loop {
+            let blocker = wow_process().or_else(|| {
+                matches!(*bridge.lock().unwrap(), TrayState::Run(RunState::Syncing { .. })).then(|| "the bridge".into())
+            });
+            if blocker.is_none() || STOP.load(Ordering::Relaxed) {
+                break;
+            }
+            if blocker != waiting_on {
+                log!("update {version} waits for {} to stop", blocker.as_deref().unwrap_or_default());
+                waiting_on = blocker;
+            }
             sleep_unless_stopped(Duration::from_secs(3));
         }
         if STOP.load(Ordering::Relaxed) {

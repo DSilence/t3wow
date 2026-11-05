@@ -4,16 +4,22 @@
 
 /// Retail, Classic, PTR and beta clients: `World of Warcraft` (macOS app
 /// binaries), `Wow.exe`, `WowClassic.exe`, `WowClassicB.exe`, `WowT.exe`, ...
+/// Not the helpers next to them: `WowVoiceProxy.exe` often outlives the game.
 pub fn is_wow_process_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    if lower.contains("launcher") || lower.contains("error") {
+    if ["launcher", "error", "proxy", "crash"].iter().any(|helper| lower.contains(helper)) {
         return false;
     }
     lower.starts_with("world of warcraft") || (lower.starts_with("wow") && lower.ends_with(".exe"))
 }
 
 pub fn wow_running() -> bool {
-    process_names().iter().any(|name| is_wow_process_name(name))
+    wow_process().is_some()
+}
+
+/// The name of a running game client, if any.
+pub fn wow_process() -> Option<String> {
+    process_names().into_iter().find(|name| is_wow_process_name(name))
 }
 
 #[cfg(target_os = "macos")]
@@ -87,7 +93,7 @@ mod tests {
         for name in ["World of Warcraft", "Wow.exe", "WowClassic.exe", "WowClassicB.exe", "WowT.exe"] {
             assert!(is_wow_process_name(name), "{name}");
         }
-        for name in ["Battle.net", "Wowup", "World of Warcraft Launcher", "WowLauncher.exe", "WowError.exe", "t3wow"] {
+        for name in ["Battle.net", "Wowup", "World of Warcraft Launcher", "WowLauncher.exe", "WowError.exe", "t3wow", "WowVoiceProxy.exe", "WowVoiceProxy"] {
             assert!(!is_wow_process_name(name), "{name}");
         }
     }
