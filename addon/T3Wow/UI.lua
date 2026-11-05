@@ -738,8 +738,8 @@ function T3:RenderThread()
     local _, message = self:BridgeState()
     local intro = self.snapshot and "Choose a project on the left, then a thread."
       or ("No data from the bridge yet.\n\n"
-        .. "1. On this computer run:  t3wow setup <your environment's MCP URL>\n"
-        .. "   It signs in and starts the bridge whenever WoW runs.\n"
+        .. "1. Open the T3 WoW app on this computer. In its Settings, sign in\n"
+        .. "   to your T3 environment and tick this game folder.\n"
         .. "2. Restart the game once, then press Sync here (or /reload).")
     if message and self.snapshot then
       intro = intro .. "\n\n" .. U.Color("ff9933", U.Escape(message))
@@ -1069,7 +1069,7 @@ function T3:RenderStatus()
   if self.liveSlots > 0 then
     table.insert(parts, "live updates left " .. self:LiveRemaining())
   else
-    table.insert(parts, U.Color("ff9933", "no live slots (run t3wow install, then restart WoW)"))
+    table.insert(parts, U.Color("ff9933", "no live updates (set them in T3 WoW Settings, then restart WoW)"))
   end
   if message and state ~= "ok" then
     table.insert(parts, U.Escape(message))

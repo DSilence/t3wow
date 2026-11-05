@@ -63,13 +63,13 @@ pub fn flavor_dirs_in(wow_root: &Path) -> Vec<PathBuf> {
 }
 
 /// Best-effort search for World of Warcraft installs in the usual places.
+/// `WOW_DIR` names the install instead (and keeps tests off the real one).
 pub fn detect_wow_roots() -> Vec<PathBuf> {
     let name = "World of Warcraft";
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("WOW_DIR") {
         candidates.push(dir.into());
-    }
-    if cfg!(target_os = "macos") {
+    } else if cfg!(target_os = "macos") {
         candidates.push(Path::new("/Applications").join(name));
         candidates.push(user_home().join("Applications").join(name));
         for volume in child_dirs(Path::new("/Volumes")) {

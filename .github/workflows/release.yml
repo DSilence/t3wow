@@ -2,6 +2,10 @@
 # SHA256SUMS. The tray app's updater reads these assets (bridge/src/update.rs),
 # so keep the asset names in sync with `update::asset_name`.
 #
+# For people, two more: T3-WoW-macOS.zip (the app, for Apple silicon and
+# Intel) and T3-WoW-Windows.exe (the same exe as t3wow-x86_64-pc-windows-msvc.exe).
+# Double-clicking either installs the app and opens its Settings.
+#
 # Two ways to start it:
 #   - Actions > Release > Run workflow, with a version like 0.2.0
 #     (or `gh workflow run release.yml -f version=0.2.0`): bumps the version
@@ -121,6 +125,10 @@ jobs:
       - name: Sign (ad hoc)
         if: runner.os == 'macOS'
         run: codesign --force --sign - dist/t3wow-${{ matrix.target }}
+      - name: The Windows download
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp "dist/t3wow-${{ matrix.target }}.exe" dist/T3-WoW-Windows.exe
       - name: Smoke test
         if: ${{ !matrix.cross }}
         shell: bash
@@ -138,9 +146,37 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  macos-app:
+    name: macOS app
+    needs: [prepare, build]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: t3wow-*-apple-darwin
+          path: bin
+          merge-multiple: true
+      - name: Universal binary
+        run: |
+          lipo -create bin/t3wow-aarch64-apple-darwin bin/t3wow-x86_64-apple-darwin -output bin/t3wow
+          chmod +x bin/t3wow
+          lipo -archs bin/t3wow
+      - name: Bundle and zip
+        run: |
+          mkdir dist
+          bin/t3wow app bundle "dist/T3 WoW.app"
+          codesign --verify --deep "dist/T3 WoW.app"
+          ditto -c -k --keepParent "dist/T3 WoW.app" dist/T3-WoW-macOS.zip
+          rm -rf "dist/T3 WoW.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: t3wow-macos-app
+          path: dist/T3-WoW-macOS.zip
+          if-no-files-found: error
+
   publish:
     name: Publish
-    needs: [prepare, build]
+    needs: [prepare, build, macos-app]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -152,7 +188,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum t3wow-* > SHA256SUMS
+          sha256sum t3wow-* T3-WoW-* > SHA256SUMS
           cat SHA256SUMS
       - name: Create the release
         env:

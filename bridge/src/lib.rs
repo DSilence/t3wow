@@ -7,6 +7,8 @@ pub mod addon_state;
 pub mod app;
 pub mod config;
 pub mod error;
+#[cfg(any(target_os = "macos", windows))]
+pub mod installer;
 pub mod lock;
 pub mod lua;
 pub mod mcp;
@@ -14,6 +16,9 @@ pub mod oauth;
 pub mod outbox;
 pub mod run;
 pub mod service;
+#[cfg(any(target_os = "macos", windows))]
+pub mod settings;
+pub mod setup;
 pub mod shot;
 pub mod sync;
 pub mod t3;

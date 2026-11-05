@@ -1,7 +1,7 @@
 //! OAuth sign-in for the environment's /mcp endpoint: discovery, dynamic client
 //! registration and the authorization code flow with PKCE, with a loopback
 //! redirect. T3 issues no refresh tokens; a sign-in lasts 30 days and then
-//! `t3wow login` has to be run again.
+//! has to be done again (Settings in the tray app, or `t3wow login`).
 //!
 //! `~/.t3wow/auth.json` maps each MCP URL to its stored sign-in (client
 //! registration, tokens, discovery results).
@@ -9,6 +9,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -21,12 +22,13 @@ use crate::error::{Error, Result};
 use crate::mcp::http_agent;
 use crate::url;
 
-fn auth_path() -> PathBuf {
+/// Where sign-ins are stored.
+pub fn auth_file() -> PathBuf {
     home_dir().join("auth.json")
 }
 
 fn read_store() -> Result<Map<String, Value>> {
-    Ok(read_json_file(&auth_path())?.unwrap_or_default())
+    Ok(read_json_file(&auth_file())?.unwrap_or_default())
 }
 
 fn update_store(server_url: &str, update: impl FnOnce(&mut Map<String, Value>)) -> Result<()> {
@@ -36,7 +38,7 @@ fn update_store(server_url: &str, update: impl FnOnce(&mut Map<String, Value>)) 
         *entry = json!({});
     }
     update(entry.as_object_mut().unwrap());
-    write_json_file(&auth_path(), &store, true)?;
+    write_json_file(&auth_file(), &store, true)?;
     Ok(())
 }
 
@@ -47,7 +49,7 @@ pub fn stored_auth(server_url: &str) -> Result<Option<Value>> {
 pub fn forget_auth(server_url: &str) -> Result<()> {
     let mut store = read_store()?;
     store.remove(server_url);
-    write_json_file(&auth_path(), &store, true)?;
+    write_json_file(&auth_file(), &store, true)?;
     Ok(())
 }
 
@@ -284,7 +286,12 @@ pub fn begin_login(server_url: &str, port: u16) -> Result<PendingLogin> {
 impl PendingLogin {
     /// Wait for the redirect, then trade the code for a token and store it.
     pub fn finish(self, timeout: Duration) -> Result<()> {
-        let code = self.wait_for_code(timeout)?;
+        self.finish_unless(timeout, &AtomicBool::new(false))
+    }
+
+    /// Like `finish`, but gives up once `cancel` is set.
+    pub fn finish_unless(self, timeout: Duration, cancel: &AtomicBool) -> Result<()> {
+        let code = self.wait_for_code(timeout, cancel)?;
         let token_endpoint = self.discovery.metadata["token_endpoint"].as_str().unwrap_or_default();
         let redirect = redirect_url(self.port);
         let mut response = http_agent().post(token_endpoint).header("accept", "application/json").send_form([
@@ -320,7 +327,7 @@ impl PendingLogin {
         })
     }
 
-    fn wait_for_code(&self, timeout: Duration) -> Result<String> {
+    fn wait_for_code(&self, timeout: Duration, cancel: &AtomicBool) -> Result<String> {
         self.listener.set_nonblocking(true)?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -331,6 +338,9 @@ impl PendingLogin {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(Error::other("Sign-in cancelled."));
+                    }
                     if Instant::now() > deadline {
                         return Err(Error::other("Timed out waiting for sign-in."));
                     }

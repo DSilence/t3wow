@@ -45,7 +45,8 @@ pub enum RunState {
 }
 
 pub struct RunOptions<'a> {
-    /// Reloaded for every game session, so `login`/`install` take effect without a restart.
+    /// Reloaded for every game session and checked while syncing, so changes
+    /// from Settings, `login` or `install` take effect without a restart.
     pub load_config: &'a dyn Fn() -> Result<BridgeConfig>,
     /// When set, the bridge only syncs while this says the game is running.
     pub game_running: Option<&'a dyn Fn() -> bool>,
@@ -60,36 +61,78 @@ pub fn run_bridge(options: &RunOptions) -> Result<()> {
         }
     };
     let Some(game_running) = options.game_running else {
-        let result = (options.load_config)().and_then(|config| session(&config, None, options.stop, &report));
-        if let Err(error) = &result {
-            report(RunState::Setup(error.to_string()));
+        loop {
+            let result = (options.load_config)().and_then(|config| session(&config, options, None, &report));
+            match result {
+                Ok(SessionEnd::SettingsChanged) => log!("settings changed, starting over"),
+                Ok(SessionEnd::Done) => return Ok(()),
+                Err(error) => {
+                    report(RunState::Setup(error.to_string()));
+                    return Err(error);
+                }
+            }
         }
-        return result;
     };
     log!("T3 WoW bridge {BRIDGE_VERSION} waiting for World of Warcraft");
     report(RunState::Waiting);
+    let mut in_game = false;
     while !options.stop.load(Ordering::Relaxed) {
         if !game_running() {
+            if in_game {
+                log!("World of Warcraft closed, waiting for it to start");
+                report(RunState::Waiting);
+                in_game = false;
+            }
             sleep_unless_stopped(GAME_POLL, options.stop);
             continue;
         }
-        log!("World of Warcraft started");
-        let result =
-            (options.load_config)().and_then(|config| session(&config, Some(game_running), options.stop, &report));
-        if let Err(error) = result {
-            // Nothing to do until the setup is fixed; try again next time the game starts.
-            log!("{error}");
-            report(RunState::Setup(error.to_string()));
-            while game_running() && !options.stop.load(Ordering::Relaxed) {
-                sleep_unless_stopped(GAME_POLL, options.stop);
-            }
+        if !in_game {
+            log!("World of Warcraft started");
+            in_game = true;
         }
-        if !options.stop.load(Ordering::Relaxed) {
-            log!("World of Warcraft closed, waiting for it to start");
-            report(RunState::Waiting);
+        let config = (options.load_config)();
+        let started_with = config.as_ref().ok().map(SessionSettings::of);
+        match config.and_then(|config| session(&config, options, Some(game_running), &report)) {
+            Ok(SessionEnd::SettingsChanged) => log!("settings changed, starting over"),
+            Ok(SessionEnd::Done) => {}
+            Err(error) => {
+                // Nothing to do until the setup is fixed (in Settings) or the game restarts.
+                log!("{error}");
+                report(RunState::Setup(error.to_string()));
+                while game_running()
+                    && !options.stop.load(Ordering::Relaxed)
+                    && (options.load_config)().ok().map(|c| SessionSettings::of(&c)) == started_with
+                {
+                    sleep_unless_stopped(GAME_POLL, options.stop);
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// The settings a sync session starts from. When they change, it starts over.
+#[derive(PartialEq)]
+struct SessionSettings {
+    server_url: Option<String>,
+    flavors: Vec<PathBuf>,
+    live_slots: u32,
+}
+
+impl SessionSettings {
+    fn of(config: &BridgeConfig) -> Self {
+        SessionSettings {
+            server_url: config.server_url.clone(),
+            flavors: config.wow_flavor_dirs.clone(),
+            live_slots: config.live_slots,
+        }
+    }
+}
+
+enum SessionEnd {
+    /// Stopped, or the game closed.
+    Done,
+    SettingsChanged,
 }
 
 fn sleep_unless_stopped(duration: Duration, stop: &AtomicBool) {
@@ -99,20 +142,20 @@ fn sleep_unless_stopped(duration: Duration, stop: &AtomicBool) {
     }
 }
 
-/// Sync until stopped or, with `game_running`, until the game has closed.
+/// Sync until stopped, until the settings change or, with `game_running`,
+/// until the game has closed.
 fn session(
     config: &BridgeConfig,
+    options: &RunOptions,
     game_running: Option<&dyn Fn() -> bool>,
-    stop: &AtomicBool,
     report: &dyn Fn(RunState),
-) -> Result<()> {
-    let server_url = config
-        .server_url
-        .clone()
-        .ok_or_else(|| Error::other("No T3 environment configured. Run `t3wow login <mcp-url>` first."))?;
+) -> Result<SessionEnd> {
+    let stop = options.stop;
+    let settings = SessionSettings::of(config);
+    let server_url = config.server_url.clone().ok_or_else(|| Error::other("Not signed in to a T3 environment yet."))?;
     let flavors: Vec<PathBuf> = config.wow_flavor_dirs.iter().filter(|f| is_installed(f)).cloned().collect();
     if flavors.is_empty() {
-        return Err(Error::other("The addon is not installed anywhere. Run `t3wow install` first."));
+        return Err(Error::other("The addon is not installed in World of Warcraft yet."));
     }
 
     let mut engine = SyncEngine::new(config.clone());
@@ -189,7 +232,7 @@ fn session(
                 client = None;
                 if let Error::AuthRequired(_) = error {
                     status.status = "auth_required";
-                    status.message = Some("Bridge needs to sign in again: run `t3wow login`".into());
+                    status.message = Some("Bridge needs to sign in again: T3 WoW > Settings".into());
                 } else {
                     status.status = "error";
                     status.message = Some(error.to_string());
@@ -223,9 +266,14 @@ fn session(
         // Folders change when WoW adds a screenshot.
         let mut watched = sv_files();
         watched.extend(shots.dirs().iter().cloned());
+        // A new sign-in from Settings ends the wait.
+        watched.push(crate::oauth::auth_file());
         wait_for_change(Duration::from_millis(wait), &watched, stop);
+        if (options.load_config)().is_ok_and(|config| SessionSettings::of(&config) != settings) {
+            return Ok(SessionEnd::SettingsChanged);
+        }
     }
-    Ok(())
+    Ok(SessionEnd::Done)
 }
 
 fn account_name(file: &Path) -> String {

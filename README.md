@@ -37,89 +37,104 @@ channel off if you prefer reloads.
 - **The T3 environment must run T3 Code 0.0.46 or newer** (currently
   nightly). The bridge uses the environment's MCP endpoint for outside
   agents (`/mcp` with OAuth sign-in), which is not in 0.0.45.
-- The `t3wow` binary on the computer that runs WoW (see below).
+- The T3 WoW app (macOS, Windows) or the `t3wow` binary (Linux) on the
+  computer that runs WoW (see below).
 - WoW Retail or Classic (TOC lists 1.60.1 / 16001 and current retail and
   classic versions).
 
-## Download
+## Install
 
-Get `t3wow` for your computer from the
-[latest release](https://github.com/DSilence/t3wow/releases/latest). It is a
-single file; `setup` copies it into the app, so the download can go afterwards.
+Download the app from the
+[latest release](https://github.com/DSilence/t3wow/releases/latest) and
+double-click it:
+
+- **macOS:** `T3-WoW-macOS.zip` (Apple silicon and Intel). Open the zip, then
+  double-click **T3 WoW**. The app is not notarized by Apple, so the first time
+  macOS refuses to open it: go to **System Settings > Privacy & Security**,
+  scroll down to the message about T3 WoW, and click **Open Anyway**.
+- **Windows:** `T3-WoW-Windows.exe`. If SmartScreen warns about an
+  unrecognized app, click **More info > Run anyway**.
+
+Double-clicking installs the **T3 WoW** app (into `~/Applications` on macOS;
+on Windows into `%LOCALAPPDATA%\t3wow`, with a Start Menu entry). It also
+installs the addon into every World of Warcraft folder it finds, then starts
+the app and opens its **Settings**. You can delete the download afterwards.
+Double-clicking a newer download later updates the app in place.
+
+The app lives in the menu bar (macOS) or the notification area (Windows).
+The icon is a ring while waiting for the game, a disc while syncing, and a
+ring with a dot when something needs you. Its menu shows what the bridge is
+doing and has **Settings…**, **Check for updates**, **Open log** and
+**Quit**. Opening the app again while it runs also opens Settings.
+
+### Settings
+
+- **T3 Code environment:** paste the environment's MCP URL (in T3 Code:
+  **Settings > Connections**, open the environment's menu, **Copy MCP URL**;
+  use the T3 Connect address to reach it from anywhere) and click **Sign in**.
+  The approval page opens in your browser. Enter a pairing code from the host
+  (**Settings > Connections**, or `t3 auth pairing create`) and choose an
+  access level. Pick **Supervised** or higher to send messages; **Read only**
+  lets you watch threads only. Threads started from the game cannot use more
+  permissions than you approve here. The sign-in lasts 30 days.
+- **World of Warcraft:** the game folders (`_retail_`, `_classic_`, ...) the
+  addon is installed in. Tick or untick one to install or remove the addon
+  there, or **Add World of Warcraft folder…** if the game lives somewhere
+  unusual. Changes need the game closed, and a restart of the game after
+  (new addon folders are only picked up at launch).
+- **Live updates:** how many times per game session the addon can pick up
+  new data without reloading the UI (see [Why a bridge?](#why-a-bridge)). The
+  default is 300 on macOS and Linux (they share one file) and 50 on Windows
+  (each one is a copy).
+- **Updates:** see below.
+
+Nothing starts on its own: open the app when you want the bridge. While it
+runs it waits for World of Warcraft, syncs while the game runs, delivers what
+you queued at logout, and goes back to waiting when the game closes. Settings
+changes apply right away, even while the game runs. Only one bridge runs at
+a time. The log is `~/.t3wow/bridge.log`.
+
+On macOS, if WoW lives on an external drive, the app may need access to it:
+allow **T3 WoW** under **System Settings > Privacy & Security > Files and
+Folders** (or **Full Disk Access**) if Settings or the log says "cannot write".
+
+### Updates
+
+The app keeps itself up to date: shortly after it starts, and every six
+hours after that, it checks for a new release. It downloads it, checks it
+against the release's `SHA256SUMS`, and installs it once World of Warcraft is
+closed (the addon is updated too), then restarts. **Check for updates** in its
+menu or Settings checks right away. Untick **Install updates automatically**
+in Settings to only update when you ask.
+
+### Command line and Linux
+
+Every release also has the plain `t3wow` binary for each platform
+(`t3wow-<target>`), which does everything from a terminal. On Linux, where
+there is no tray app, this is how to run it:
 
 ```sh
-# macOS (Apple silicon; use t3wow-x86_64-apple-darwin on Intel)
-curl -fLo t3wow https://github.com/DSilence/t3wow/releases/latest/download/t3wow-aarch64-apple-darwin
-chmod +x t3wow
-
-# Linux (x86_64; t3wow-aarch64-unknown-linux-gnu on ARM)
 curl -fLo ~/.local/bin/t3wow https://github.com/DSilence/t3wow/releases/latest/download/t3wow-x86_64-unknown-linux-gnu
 chmod +x ~/.local/bin/t3wow
+t3wow setup https://<environment-address>/mcp   # sign in and install the addon
+t3wow run --wait-for-wow                        # the bridge, in this terminal
 ```
 
-```powershell
-# Windows (PowerShell)
-Invoke-WebRequest https://github.com/DSilence/t3wow/releases/latest/download/t3wow-x86_64-pc-windows-msvc.exe -OutFile t3wow.exe
-```
+`t3wow setup` signs in (`t3wow login <mcp-url>`), installs the addon
+(`t3wow install`, which finds WoW itself or takes `--wow "/path/to/World of
+Warcraft"`, plus `--flavor classic_beta`, `--slots 300`, `--link` to symlink
+this checkout's addon for development, and `--copy-slots`) and, on macOS and
+Windows, the app (`t3wow app install`). `t3wow status` shows the setup,
+`t3wow update` installs the latest release (close the game first; `--check`
+only looks), and plain `t3wow run` syncs right away. `WOW_DIR` names the World
+of Warcraft folder when looking for it.
 
 Each release lists checksums in `SHA256SUMS`. To build it yourself instead,
 use [Rust](https://rustup.rs): `cargo build --release --manifest-path
 bridge/Cargo.toml` produces `bridge/target/release/t3wow`.
 
-## Setup
-
-Get the MCP URL from T3 Code: **Settings > Connections**, open the
-environment's menu, **Copy MCP URL**. Use the T3 Connect address to reach it
-from anywhere. Then:
-
-```sh
-t3wow setup https://<environment-address>/mcp
-```
-
-That does three things, which you can also run one at a time:
-
-1. `t3wow login <mcp-url>` signs in. The approval page opens in your browser.
-   Enter a pairing code from the host (**Settings > Connections** or
-   `t3 auth pairing create`) and choose an access level. Pick **Supervised**
-   or higher to send messages; **Read only** lets you watch threads only.
-   Threads started from the game cannot use more permissions than you approve
-   here. The sign-in lasts 30 days.
-2. `t3wow install` installs the addon (it is built into the binary). It finds
-   WoW automatically, or pass `--wow "/path/to/World of Warcraft"`. Options:
-   `--flavor classic_beta`, `--slots 300`, `--link` (symlink this checkout's
-   addon, for development), `--copy-slots` (see below).
-3. `t3wow app install` installs the **T3 WoW** tray app: `~/Applications/T3
-   WoW.app` on macOS (a menu bar app, no Dock icon), a Start Menu shortcut on
-   Windows. Nothing starts on its own: open the app when you want the bridge.
-   While it is open it waits for World of Warcraft, syncs while the game runs,
-   delivers what you queued at logout, and goes back to waiting when the game
-   closes. Its menu shows what it is doing and has **Open log** and **Quit**.
-   The icon is a ring while waiting, a disc while syncing, and a ring with a
-   dot when something needs you. The log is `~/.t3wow/bridge.log`.
-
-Restart WoW once after installing (new addon folders are only picked up at
-launch). Without the tray (and on Linux): `t3wow run --wait-for-wow` in a
-terminal, or plain `t3wow run` to sync right away. Only one bridge runs at a
-time; a second one refuses to start.
-
-Earlier versions installed a login service instead. `t3wow app install` (and
-`setup`) removes it; the tray app will not sync while it is still there.
-
-On macOS, if WoW lives on an external drive, the app may need access to it:
-allow **T3 WoW** under **System Settings > Privacy & Security > Files and
-Folders** (or **Full Disk Access**) if the log shows "cannot write".
-
-### Updates
-
-The tray app keeps itself up to date: shortly after it starts, and every six
-hours after that, it checks for a new release. It downloads it, checks it
-against the release's `SHA256SUMS`, and installs it once World of Warcraft is
-closed (the addon is updated too), then restarts. **Check for updates** in its
-menu checks right away. Set `"autoUpdate": false` in `~/.t3wow/config.json` to
-only update when you ask from the menu.
-
-From a terminal (and on Linux): `t3wow update` installs the latest release
-(close the game first), `t3wow update --check` only looks.
+Earlier versions installed a login service instead. Installing the app
+removes it; the app will not sync while it is still there.
 
 In game: `/t3` opens the window. You can also bind a key under
 Key Bindings > AddOns.
@@ -178,12 +193,13 @@ Sync.
 
 ## Configuration
 
-`~/.t3wow/config.json` (created by `login`/`install`; the bridge rereads it
-each time the game starts):
+`~/.t3wow/config.json` (written by Settings, `login` and `install`; the
+bridge picks up changes while it runs). The first and last rows are in
+Settings; the rest are for tuning by hand:
 
 | Key                         | Default | Meaning                                              |
 | --------------------------- | ------- | ---------------------------------------------------- |
-| `liveSlots`                 | 300     | Live updates per UI session (50 on Windows; re-run `install`) |
+| `liveSlots`                 | 300     | Live updates per UI session (50 on Windows; change it in Settings or with `install --slots`) |
 | `activePollMs`              | 2000    | Poll interval while something runs or is being sent   |
 | `idlePollMs`                | 8000    | Poll interval otherwise                              |
 | `maxProjects`               | 12      | Projects included                                    |
@@ -214,7 +230,12 @@ pnpm lint:lua      # Lua 5.1 syntax + accidental globals
 `bridge/tests/e2e.rs` runs the whole loop against a fake T3 MCP server:
 SavedVariables, then bridge, then MCP, then snapshot files, then the real
 addon in Lua 5.1. `bridge/tests/wait_for_wow.rs` covers the tray's wait-for-WoW mode
-(idle while the game is closed, final delivery at logout).
+(idle while the game is closed, final delivery at logout),
+`bridge/tests/settings_change.rs` settings changing while the game runs, and
+`bridge/tests/settings_window.rs` the commands the Settings page sends. The
+page itself is `bridge/assets/settings.html`, shown in a web view (WKWebView,
+WebView2). `cargo run --manifest-path bridge/Cargo.toml -- tray --settings`
+opens it (set `T3WOW_HOME` and `WOW_DIR` to try it on a scratch setup).
 
 To type-check the Linux and Windows code paths from macOS without a C
 cross-compiler, leave out TLS (its crypto library needs one):
@@ -235,7 +256,8 @@ gh workflow run release.yml -f version=0.2.0
 It bumps the version in `bridge/Cargo.toml`, `Cargo.lock` and `package.json`,
 commits and tags `v0.2.0` on the default branch, builds the bridge for macOS
 (Apple silicon and Intel), Windows and Linux (x86_64 and ARM), and publishes a
-GitHub release with those binaries and `SHA256SUMS`. Pushing a `vX.Y.Z` tag
+GitHub release with those binaries, the double-clickable `T3-WoW-macOS.zip`
+(a universal app) and `T3-WoW-Windows.exe`, and `SHA256SUMS`. Pushing a `vX.Y.Z` tag
 that matches `bridge/Cargo.toml` releases that commit instead. Installed tray
 apps pick the release up within six hours.
 

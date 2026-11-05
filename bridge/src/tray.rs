@@ -1,23 +1,27 @@
 //! The tray app: a menu bar (macOS) or notification area (Windows) icon that
 //! runs the bridge while it is open. The bridge idles until World of Warcraft
 //! starts, syncs while it runs, and stops when you quit the app. It also
-//! installs new releases between game sessions (see `update.rs`).
+//! installs new releases between game sessions (see `update.rs`), and its
+//! Settings window does the setup (see `settings.rs`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tao::event::{Event, StartCause};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+use crate::app::{self, TrayRequest};
 use crate::config::{BRIDGE_VERSION, load_config};
 use crate::error::Result;
 use crate::lock::BridgeLock;
 use crate::log;
 use crate::run::{RunOptions, RunState, run_bridge};
 use crate::service;
+use crate::settings::{Action, Settings, TrayInfo};
+use crate::setup;
 use crate::update;
 use crate::watch::wow_running;
 
@@ -52,6 +56,17 @@ enum UpdateState {
 
 enum UserEvent {
     Menu(MenuEvent),
+    /// A message from the settings page.
+    Page(String),
+    /// Work for the settings page finished.
+    Wake,
+}
+
+pub struct TrayOptions {
+    /// Open Settings right away (the app was just installed or opened again).
+    pub open_settings: bool,
+    /// The app was just installed: put the addon into the games it finds.
+    pub first_run: bool,
 }
 
 fn shorten(text: &str, max: usize) -> String {
@@ -69,7 +84,7 @@ fn describe(state: &TrayState) -> String {
         TrayState::Blocked(message) => shorten(message, 70),
         TrayState::Run(RunState::Waiting) => "Waiting for World of Warcraft".into(),
         TrayState::Run(RunState::Setup(message)) => format!("Setup needed: {}", shorten(message, 60)),
-        TrayState::Run(RunState::SignInNeeded) => "Sign in again: run `t3wow login`".into(),
+        TrayState::Run(RunState::SignInNeeded) => "Sign-in expired: sign in again in Settings".into(),
         TrayState::Run(RunState::Error(message)) => format!("Can't reach T3: {}", shorten(message, 56)),
         TrayState::Run(RunState::Syncing { server, running, read_only }) => {
             let mut text = format!("Syncing with {server}");
@@ -269,20 +284,9 @@ fn open_file(path: &std::path::Path) {
     let _ = command.arg(path).spawn();
 }
 
-#[cfg(windows)]
-fn detach_console() {
-    // Started from the Start Menu, the console window would stay open.
-    unsafe extern "system" {
-        fn FreeConsole() -> i32;
-    }
-    unsafe {
-        FreeConsole();
-    }
-}
-
-/// Start the bridge on a background thread. It holds the lock while it runs.
-fn start_bridge(state: Arc<Mutex<TrayState>>) -> Option<std::thread::JoinHandle<()>> {
-    // Right after an update the old app may still be letting go of the lock.
+/// The bridge lock, waiting a little: right after an update or a restart the
+/// old app may still be letting go of it.
+fn acquire_lock() -> Result<BridgeLock> {
     let mut attempt = BridgeLock::acquire();
     for _ in 0..20 {
         if attempt.is_ok() {
@@ -291,15 +295,12 @@ fn start_bridge(state: Arc<Mutex<TrayState>>) -> Option<std::thread::JoinHandle<
         std::thread::sleep(Duration::from_millis(250));
         attempt = BridgeLock::acquire();
     }
-    let lock = match attempt {
-        Ok(lock) => lock,
-        Err(error) => {
-            log!("{error}");
-            *state.lock().unwrap() = TrayState::Blocked(error.to_string());
-            return None;
-        }
-    };
-    Some(std::thread::spawn(move || {
+    attempt
+}
+
+/// Start the bridge on a background thread. It holds the lock while it runs.
+fn start_bridge(state: Arc<Mutex<TrayState>>, lock: BridgeLock) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
         let _lock = lock;
         let report_state = state.clone();
         let report = move |run: RunState| *report_state.lock().unwrap() = TrayState::Run(run);
@@ -310,7 +311,12 @@ fn start_bridge(state: Arc<Mutex<TrayState>>) -> Option<std::thread::JoinHandle<
             log!("bridge stopped: {error}");
             *state.lock().unwrap() = TrayState::Blocked(format!("Bridge stopped: {error}"));
         }
-    }))
+    })
+}
+
+fn tray_info(state: &TrayState, update: &UpdateState) -> TrayInfo {
+    let (update_text, update_enabled) = describe_update(update);
+    TrayInfo { status: describe(state), attention: shape_for(state) == Shape::Badge, update_text, update_enabled }
 }
 
 /// Stop the bridge thread, giving it a moment to finish; do not wait on a slow request.
@@ -324,21 +330,37 @@ fn stop_bridge(bridge: &mut Option<std::thread::JoinHandle<()>>) {
     }
 }
 
-pub fn run_tray() -> Result<()> {
+pub fn run_tray(options: TrayOptions) -> Result<()> {
     #[cfg(windows)]
-    detach_console();
+    crate::win::detach_console();
     crate::log::log_to_file(service::log_file())?;
+    // A request left behind for a tray app that was not running.
+    let _ = app::take_tray_request();
+    let lock = match acquire_lock() {
+        Ok(lock) => Some(lock),
+        // Opened again while running: the running one shows its settings.
+        Err(_) if app::hand_over_to_tray(TrayRequest::OpenSettings)? => return Ok(()),
+        Err(error) => {
+            log!("{error}");
+            None
+        }
+    };
     log!("T3 WoW tray app {BRIDGE_VERSION}");
     let state = Arc::new(Mutex::new(TrayState::Starting));
     // The old login service runs its own bridge without the lock; two would
     // both deliver commands.
-    let mut bridge = if service::legacy_installed() {
-        log!("the old login service is still installed");
-        *state.lock().unwrap() =
-            TrayState::Blocked("Old login service still installed: run `t3wow app install`".into());
-        None
-    } else {
-        start_bridge(state.clone())
+    let mut bridge = match lock {
+        _ if service::legacy_installed() => {
+            log!("the old login service is still installed");
+            *state.lock().unwrap() =
+                TrayState::Blocked("Old login service still installed: run `t3wow app install`".into());
+            None
+        }
+        Some(lock) => Some(start_bridge(state.clone(), lock)),
+        None => {
+            *state.lock().unwrap() = TrayState::Blocked("Another bridge is running (`t3wow run` in a terminal)".into());
+            None
+        }
     };
     let exe = std::env::current_exe()?;
     let update_state = Arc::new(Mutex::new(UpdateState::Idle));
@@ -354,14 +376,34 @@ pub fn run_tray() -> Result<()> {
         use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
     }
-    let proxy = Mutex::new(event_loop.create_proxy());
-    MenuEvent::set_event_handler(Some(move |event| {
-        let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(event));
-    }));
+    let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
+    {
+        let proxy = proxy.clone();
+        MenuEvent::set_event_handler(Some(move |event| {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(event));
+        }));
+    }
+    let mut settings = {
+        let (wake_proxy, page_proxy) = (proxy.clone(), proxy.clone());
+        Settings::new(
+            Arc::new(move || {
+                let _ = wake_proxy.lock().unwrap().send_event(UserEvent::Wake);
+            }),
+            Arc::new(move |message| {
+                let _ = page_proxy.lock().unwrap().send_event(UserEvent::Page(message));
+            }),
+        )
+    };
+    let config = load_config().unwrap_or_default();
+    let mut open_settings = options.open_settings || !setup::is_complete(&config);
+    if options.first_run && config.wow_flavor_dirs.is_empty() {
+        settings.look_for_wow(true);
+    }
 
     let menu = Menu::new();
     let heading = MenuItem::new(format!("T3 WoW bridge {BRIDGE_VERSION}"), false, None);
     let status = MenuItem::new(describe(&TrayState::Starting), false, None);
+    let settings_item = MenuItem::new("Settings…", true, None);
     let open_log = MenuItem::new("Open log", true, None);
     let (update_text, update_enabled) = describe_update(&UpdateState::Idle);
     let update_item = MenuItem::new(update_text, update_enabled, None);
@@ -370,6 +412,7 @@ pub fn run_tray() -> Result<()> {
         &heading,
         &status,
         &PredefinedMenuItem::separator(),
+        &settings_item,
         &update_item,
         &open_log,
         &PredefinedMenuItem::separator(),
@@ -381,8 +424,18 @@ pub fn run_tray() -> Result<()> {
     let mut menu = Some(menu);
     let mut shown: Option<TrayState> = None;
     let mut shown_update = UpdateState::Idle;
-    event_loop.run(move |event, _, flow| {
+    // Start again with Settings open (the app was updated on disk).
+    let mut restart_with_settings = false;
+    let mut next_settings_refresh = Instant::now();
+    // Events still arrive after asking the loop to exit; quit and restart run once.
+    let mut exiting = false;
+    event_loop.run(move |event, target, flow| {
+        if exiting {
+            *flow = ControlFlow::Exit;
+            return;
+        }
         *flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
+        let mut refresh_settings = false;
         match event {
             // macOS wants the icon created once the event loop runs.
             Event::NewEvents(StartCause::Init) => {
@@ -397,6 +450,7 @@ pub fn run_tray() -> Result<()> {
                     Ok(icon) => tray = Some(icon),
                     Err(error) => {
                         log!("could not create the tray icon: {error}");
+                        exiting = true;
                         *flow = ControlFlow::Exit;
                         return;
                     }
@@ -405,10 +459,15 @@ pub fn run_tray() -> Result<()> {
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id == *quit.id() {
                     log!("quitting");
+                    settings.close(target);
                     stop_bridge(&mut bridge);
                     tray.take();
+                    exiting = true;
                     *flow = ControlFlow::Exit;
                     return;
+                }
+                if event.id == *settings_item.id() {
+                    open_settings = true;
                 }
                 if event.id == *open_log.id() {
                     open_file(&service::log_file());
@@ -417,24 +476,58 @@ pub fn run_tray() -> Result<()> {
                     CHECK_NOW.store(true, Ordering::Relaxed);
                 }
             }
+            Event::UserEvent(UserEvent::Page(message)) => {
+                let info = tray_info(&state.lock().unwrap(), &update_state.lock().unwrap());
+                match settings.handle(&message, &info) {
+                    Some(Action::CheckForUpdates) => CHECK_NOW.store(true, Ordering::Relaxed),
+                    Some(Action::OpenLog) => open_file(&service::log_file()),
+                    None => {}
+                }
+            }
+            Event::UserEvent(UserEvent::Wake) => refresh_settings = true,
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. }
+                if Some(window_id) == settings.window_id() =>
+            {
+                settings.close(target);
+            }
+            // Opened again from Finder, Spotlight or the Dock while running.
+            Event::Reopen { .. } => open_settings = true,
             _ => {}
+        }
+        match app::take_tray_request() {
+            Some(TrayRequest::OpenSettings) => open_settings = true,
+            Some(TrayRequest::Restart) => {
+                log!("a newer version was installed");
+                restart_with_settings = true;
+                RESTART.store(true, Ordering::Relaxed);
+            }
+            None => {}
         }
         if RESTART.load(Ordering::Relaxed) {
             log!("restarting with the new version");
+            settings.close(target);
             stop_bridge(&mut bridge);
-            if let Err(error) = update::relaunch(&exe) {
+            let args: &[&str] = if restart_with_settings { &["--settings"] } else { &[] };
+            if let Err(error) = update::relaunch(&exe, args) {
                 log!("could not start the new version: {error}");
             }
             tray.take();
+            exiting = true;
             *flow = ControlFlow::Exit;
             return;
+        }
+        if open_settings && tray.is_some() {
+            open_settings = false;
+            settings.show(target);
+            refresh_settings = true;
         }
         let current_update = update_state.lock().unwrap().clone();
         if current_update != shown_update {
             let (text, enabled) = describe_update(&current_update);
             update_item.set_text(&text);
             update_item.set_enabled(enabled);
-            shown_update = current_update;
+            shown_update = current_update.clone();
+            refresh_settings = true;
         }
         let current = state.lock().unwrap().clone();
         if shown.as_ref() != Some(&current) {
@@ -449,7 +542,13 @@ pub fn run_tray() -> Result<()> {
                     let _ = tray.set_icon(Some(icon(shape_for(&current))));
                 }
             }
-            shown = Some(current);
+            shown = Some(current.clone());
+            refresh_settings = true;
+        }
+        // Now and then for what nothing reports: the game starting, a sign-in expiring.
+        if settings.is_open() && (refresh_settings || Instant::now() >= next_settings_refresh) {
+            settings.refresh(&tray_info(&current, &current_update));
+            next_settings_refresh = Instant::now() + Duration::from_secs(3);
         }
     })
 }

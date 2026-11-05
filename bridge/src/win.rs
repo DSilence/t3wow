@@ -8,8 +8,9 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx,
     CoUninitialize, IPersistFile,
 };
+use windows::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
 use windows::Win32::UI::Shell::{IShellLinkW, ShellExecuteW, ShellLink};
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNORMAL};
 use windows::core::{HSTRING, Interface, w};
 
 use crate::error::{Error, Result};
@@ -58,6 +59,8 @@ pub fn create_shortcut(link: &Path, shortcut: &Shortcut) -> Result<()> {
         shell_link.SetArguments(&HSTRING::from(shortcut.arguments))?;
         shell_link.SetDescription(&HSTRING::from(shortcut.description))?;
         shell_link.SetIconLocation(&HSTRING::from(shortcut.icon.as_os_str()), 0)?;
+        // The tray app drops its console right away; minimized, it does not flash up.
+        shell_link.SetShowCmd(SW_SHOWMINNOACTIVE)?;
         if let Some(dir) = shortcut.target.parent() {
             shell_link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()))?;
         }
@@ -77,4 +80,18 @@ pub fn shell_open(target: impl AsRef<OsStr>) -> Result<()> {
         return Err(Error::other(format!("Could not open {target}")));
     }
     Ok(())
+}
+
+/// Let go of the console: started from the Start Menu or Explorer, its
+/// window would stay open.
+pub fn detach_console() {
+    let _ = unsafe { FreeConsole() };
+}
+
+/// Whether this process has its console to itself: started by double-click
+/// in Explorer rather than from a terminal, which shares its console.
+pub fn launched_from_explorer() -> bool {
+    let mut processes = [0u32; 4];
+    let count = unsafe { GetConsoleProcessList(&mut processes) };
+    count == 1
 }

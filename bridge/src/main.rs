@@ -1,6 +1,4 @@
 use std::path::PathBuf;
-#[cfg(not(windows))]
-use std::process::Command;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -9,8 +7,9 @@ use t3wow::config::{BRIDGE_VERSION, home_dir, load_config, save_config};
 use t3wow::error::{Error, Result};
 use t3wow::lock::BridgeLock;
 use t3wow::run::{RunOptions, run_bridge};
+use t3wow::setup::{SignIn, normalize_mcp_url};
 use t3wow::t3::T3Client;
-use t3wow::{app, oauth, service, update, url, watch, wow};
+use t3wow::{app, oauth, service, setup, update, url, watch, wow};
 
 fn usage() -> String {
     format!(
@@ -18,10 +17,11 @@ fn usage() -> String {
 
 Usage:
   t3wow setup <mcp-url> [install options]  Sign in, install the addon and the tray app
+                                           (or double-click the app and use its Settings)
   t3wow login <mcp-url> [--no-browser]     Sign in to a T3 environment (asks for a pairing code)
   t3wow install [--wow <dir>] [--flavor <name>] [--slots <n>] [--link] [--copy-slots]
                                            Install the addon into World of Warcraft
-  t3wow tray                               Run the bridge from the menu bar / notification area
+  t3wow tray [--settings]                  Run the bridge from the menu bar / notification area
   t3wow app install|uninstall|open         The \"T3 WoW\" app that starts the tray (macOS, Windows)
   t3wow run [--wait-for-wow]               Run the bridge in this terminal instead
   t3wow update [--check]                   Install the latest release (the tray app does this itself)
@@ -47,6 +47,8 @@ struct Args {
     no_browser: bool,
     wait_for_wow: bool,
     check: bool,
+    settings: bool,
+    first_run: bool,
     help: bool,
 }
 
@@ -70,6 +72,8 @@ fn parse_args() -> Result<Args> {
             "--no-browser" => args.no_browser = true,
             "--wait-for-wow" => args.wait_for_wow = true,
             "--check" => args.check = true,
+            "--settings" => args.settings = true,
+            "--first-run" => args.first_run = true,
             "-h" | "--help" => args.help = true,
             "-V" | "--version" => args.positionals.insert(0, "version".into()),
             flag if flag.starts_with('-') => return Err(Error::other(format!("Unknown option {flag}"))),
@@ -80,35 +84,7 @@ fn parse_args() -> Result<Args> {
 }
 
 fn open_in_browser(target: &str) {
-    #[cfg(windows)]
-    {
-        let _ = t3wow::win::shell_open(target);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = browser_command(target).spawn();
-    }
-}
-
-#[cfg(not(windows))]
-fn browser_command(target: &str) -> Command {
-    let mut command = Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" });
-    command.arg(target);
-    command
-}
-
-fn normalize_mcp_url(input: &str) -> String {
-    let input = input.trim();
-    let with_scheme = if input.starts_with("http://") || input.starts_with("https://") {
-        input.to_string()
-    } else {
-        format!("https://{input}")
-    };
-    let (origin, rest) = url::split(&with_scheme).unwrap_or((&with_scheme, ""));
-    let path = url::path(&with_scheme).trim_end_matches('/');
-    let query = &rest[rest.find(['?', '#']).unwrap_or(rest.len())..];
-    let path = if path.ends_with("/mcp") { path.to_string() } else { format!("{path}/mcp") };
-    format!("{}{path}{query}", origin.to_ascii_lowercase())
+    app::open_external(target);
 }
 
 fn login(raw_url: Option<&str>, open_browser: bool) -> Result<()> {
@@ -169,13 +145,7 @@ fn install(args: &Args) -> Result<()> {
     if roots.is_empty() {
         return Err(Error::other("Could not find World of Warcraft. Pass --wow \"/path/to/World of Warcraft\"."));
     }
-    let mut flavors: Vec<PathBuf> = roots
-        .iter()
-        .flat_map(|root| {
-            let is_flavor = root.file_name().and_then(|n| n.to_str()).is_some_and(wow::is_flavor_name);
-            if is_flavor { vec![root.clone()] } else { wow::flavor_dirs_in(root) }
-        })
-        .collect();
+    let mut flavors: Vec<PathBuf> = roots.iter().flat_map(|root| setup::flavors_in(root)).collect();
     if let Some(flavor) = &args.flavor {
         let wanted = format!("_{}_", flavor.trim_matches('_'));
         flavors.retain(|dir| dir.file_name().and_then(|n| n.to_str()) == Some(wanted.as_str()));
@@ -183,22 +153,19 @@ fn install(args: &Args) -> Result<()> {
     if flavors.is_empty() {
         return Err(Error::other("No matching WoW flavor folders (_retail_, _classic_, ...) found."));
     }
-    let live_slots = match &args.slots {
-        Some(s) => s.parse::<u32>().ok().filter(|n| *n <= 500).ok_or_else(|| Error::other("--slots must be 0-500."))?,
-        None => config.live_slots,
-    };
+    if let Some(slots) = &args.slots {
+        let slots = slots.parse::<u32>().map_err(|_| Error::other("--slots needs a number."))?;
+        config.live_slots = setup::check_live_slots(slots)?;
+    }
     for flavor in &flavors {
-        wow::install_addon(flavor, args.link, live_slots, args.copy_slots)?;
+        setup::install_into(&mut config, flavor, args.link, args.copy_slots)?;
         println!(
-            "Installed into {} ({live_slots} live slots{})",
+            "Installed into {} ({} live slots{})",
             flavor.display(),
+            config.live_slots,
             if args.link { ", linked" } else { "" }
         );
-        if !config.wow_flavor_dirs.contains(flavor) {
-            config.wow_flavor_dirs.push(flavor.clone());
-        }
     }
-    config.live_slots = live_slots;
     save_config(&config)?;
     if watch::wow_running() {
         println!("\nWoW is running: restart it, since new addon folders are only picked up at launch.");
@@ -211,14 +178,11 @@ fn status() -> Result<()> {
     println!("Bridge:        t3wow {BRIDGE_VERSION}, home {}", home_dir().display());
     println!("Environment:   {}", config.server_url.as_deref().unwrap_or("(none, run t3wow login)"));
     if let Some(server_url) = &config.server_url {
-        let auth = oauth::stored_auth(server_url)?.unwrap_or_default();
-        let signed_in = auth["tokens"]["access_token"].is_string();
-        let expires = auth["tokensExpireAt"].as_i64();
-        let state = match (signed_in, expires) {
-            (false, _) => "no".to_string(),
-            (true, Some(at)) if at <= oauth::now_ms() => "expired, run t3wow login".to_string(),
-            (true, Some(at)) => format!("yes, {} days left", (at - oauth::now_ms()) / 86_400_000),
-            (true, None) => "yes".to_string(),
+        let state = match setup::sign_in_state(server_url) {
+            SignIn::No => "no".to_string(),
+            SignIn::Expired => "expired, run t3wow login".to_string(),
+            SignIn::Yes(Some(days)) => format!("yes, {days} days left"),
+            SignIn::Yes(None) => "yes".to_string(),
         };
         println!("Signed in:     {state}");
     }
@@ -289,12 +253,12 @@ fn run(args: &Args) -> Result<()> {
 }
 
 #[cfg(any(target_os = "macos", windows))]
-fn tray() -> Result<()> {
-    t3wow::tray::run_tray()
+fn tray(args: &Args) -> Result<()> {
+    t3wow::tray::run_tray(t3wow::tray::TrayOptions { open_settings: args.settings, first_run: args.first_run })
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn tray() -> Result<()> {
+fn tray(_args: &Args) -> Result<()> {
     Err(Error::other("The tray app is for macOS and Windows. On Linux run `t3wow run --wait-for-wow`."))
 }
 
@@ -326,9 +290,23 @@ fn app_command(action: Option<&str>) -> Result<()> {
             println!("{}", if removed { "Removed the app." } else { "The app was not installed." });
         }
         Some("open") => app::open()?,
+        // Release builds package the app with this (macOS).
+        #[cfg(target_os = "macos")]
+        Some("bundle") => {
+            let path = args_path(2)?;
+            app::write_bundle(&path)?;
+            println!("Wrote {}.", path.display());
+        }
         _ => return Err(Error::other("Use `t3wow app install`, `t3wow app uninstall` or `t3wow app open`.")),
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn args_path(index: usize) -> Result<PathBuf> {
+    let args: Vec<String> = std::env::args().skip(1).filter(|arg| !arg.starts_with("--")).collect();
+    let path = args.get(index).ok_or_else(|| Error::other("Pass a path."))?;
+    Ok(std::path::absolute(path)?)
 }
 
 fn update(args: &Args) -> Result<()> {
@@ -377,16 +355,23 @@ fn main_inner() -> Result<()> {
     update::clean_up();
     let args = parse_args()?;
     let mut command = if args.help { Some("help") } else { args.positionals.first().map(String::as_str) };
-    // Opened as "T3 WoW.app": Finder passes no command.
-    if command.is_none() && app::launched_from_bundle() {
-        command = Some("tray");
+    if command.is_none() && double_clicked() {
+        command = Some(if installed_copy() { "tray" } else { "install-app" });
     }
     match command {
+        #[cfg(any(target_os = "macos", windows))]
+        Some("install-app") => {
+            let result = t3wow::installer::install_and_start();
+            if let Err(error) = &result {
+                t3wow::installer::show_error(&error.to_string());
+            }
+            result
+        }
         Some("setup") => setup(&args),
         Some("login") => login(args.positionals.get(1).map(String::as_str), !args.no_browser),
         Some("install") => install(&args),
         Some("run") => run(&args),
-        Some("tray") => tray(),
+        Some("tray") => tray(&args),
         Some("app") => app_command(args.positionals.get(1).map(String::as_str)),
         Some("service") => match args.positionals.get(1).map(String::as_str) {
             Some("uninstall") => remove_old_service(),
@@ -431,6 +416,30 @@ fn main_inner() -> Result<()> {
     }
 }
 
+/// Opened from Finder or Explorer rather than a terminal: Finder passes no
+/// command to "T3 WoW.app", and a double-clicked exe has a console of its own.
+fn double_clicked() -> bool {
+    #[cfg(windows)]
+    {
+        t3wow::win::launched_from_explorer()
+    }
+    #[cfg(not(windows))]
+    {
+        app::launched_from_bundle()
+    }
+}
+
+/// The installed app runs the tray; any other copy installs itself first.
+#[cfg(any(target_os = "macos", windows))]
+fn installed_copy() -> bool {
+    app::running_installed_copy()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn installed_copy() -> bool {
+    true
+}
+
 fn main() -> ExitCode {
     match main_inner() {
         Ok(()) => ExitCode::SUCCESS,
@@ -438,18 +447,5 @@ fn main() -> ExitCode {
             eprintln!("t3wow: {error}");
             ExitCode::FAILURE
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_mcp_url;
-
-    #[test]
-    fn normalizes_mcp_urls() {
-        assert_eq!(normalize_mcp_url("http://127.0.0.1:3773/mcp"), "http://127.0.0.1:3773/mcp");
-        assert_eq!(normalize_mcp_url("box.tail1234.ts.net"), "https://box.tail1234.ts.net/mcp");
-        assert_eq!(normalize_mcp_url("https://Host/"), "https://host/mcp");
-        assert_eq!(normalize_mcp_url("https://host/env/mcp/"), "https://host/env/mcp");
     }
 }

@@ -181,7 +181,7 @@ describe("addon", () => {
     const vm = boot();
     assert.match(vm.run(`return T3WowDB.instanceId`) as string, /^[0-9a-f]+-[0-9a-f]{16}$/);
     vm.run(`T3Wow:Toggle()`);
-    assert.match(vm.run(`return T3Wow:MessagesText()`) as string, /t3wow setup/);
+    assert.match(vm.run(`return T3Wow:MessagesText()`) as string, /Open the T3 WoW app/);
     assert.equal(vm.run(`return select(1, T3Wow:BridgeState())`), "missing");
   });
 

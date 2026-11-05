@@ -212,7 +212,7 @@ end
 function T3:BridgeState()
   local snapshot = self.snapshot
   if not snapshot then
-    return "missing", "No data from the bridge yet. Run `t3wow setup` on this computer."
+    return "missing", "No data from the bridge yet. Open the T3 WoW app on this computer."
   end
   local bridge = snapshot.bridge or {}
   local age = time() - (snapshot.generatedAt or 0)

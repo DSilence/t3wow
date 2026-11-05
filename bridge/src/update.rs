@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{BRIDGE_VERSION, create_private_dir, home_dir, load_config};
 use crate::error::{Error, Result};
-use crate::{app, wow};
+use crate::{app, setup};
 
 /// Where releases are published, from `repository` in Cargo.toml.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -222,13 +222,7 @@ pub fn install(new_binary: &Path) -> Result<String> {
 /// installed (it ships inside the binary) and the app, if it is installed.
 pub fn post_update() -> Result<()> {
     let config = load_config()?;
-    for flavor in &config.wow_flavor_dirs {
-        // Linked installs (`install --link`) run the addon from a checkout.
-        if !wow::is_installed(flavor) || wow::addon_linked(flavor) {
-            continue;
-        }
-        let copy_slots = config.live_slots > 0 && !wow::slots_linked(flavor);
-        wow::install_addon(flavor, false, config.live_slots, copy_slots)?;
+    for flavor in setup::reinstall_everywhere(&config)? {
         println!("Updated the addon in {}", flavor.display());
     }
     if cfg!(any(target_os = "macos", windows)) && app::installed() {
@@ -238,13 +232,19 @@ pub fn post_update() -> Result<()> {
     Ok(())
 }
 
-/// Start the updated tray app. `exe` is the binary the old one ran from.
-pub fn relaunch(exe: &Path) -> Result<()> {
+/// Start the updated tray app with extra arguments. `exe` is the binary the
+/// old one ran from.
+pub fn relaunch(exe: &Path, args: &[&str]) -> Result<()> {
     if cfg!(target_os = "macos") && app::launched_from_bundle() {
         // A new instance: the old one is still quitting.
-        Command::new("open").arg("-n").arg(app::app_path()).spawn()?;
+        let mut open = Command::new("open");
+        open.arg("-n").arg(app::app_path());
+        if !args.is_empty() {
+            open.arg("--args").args(args);
+        }
+        open.spawn()?;
     } else {
-        command(exe).arg("tray").spawn()?;
+        command(exe).arg("tray").args(args).spawn()?;
     }
     Ok(())
 }

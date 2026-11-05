@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>T3 WoW Settings</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --line: #e3e3e8;
+    --field: #ffffff;
+    --field-line: #c9c9d0;
+    --accent: #5b5bd6;
+    --accent-text: #ffffff;
+    --ok: #2f9e5b;
+    --warn: #c47a12;
+    --bad: #d13b3b;
+    --note-bg: #eef7f1;
+    --error-bg: #fdeeee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --card: #2a2a2d;
+      --text: #f2f2f5;
+      --muted: #a1a1a8;
+      --line: #3a3a3f;
+      --field: #1f1f22;
+      --field-line: #4a4a50;
+      --accent: #8b8bf0;
+      --accent-text: #15151a;
+      --ok: #4cc27a;
+      --warn: #e0a040;
+      --bad: #f06a6a;
+      --note-bg: #1f3327;
+      --error-bg: #3a2224;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 20px 20px 28px;
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  header h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  header .version { color: var(--muted); font-size: 12px; }
+  .status { display: flex; align-items: center; gap: 7px; margin-top: 2px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.attention { background: var(--warn); }
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+  .hint { color: var(--muted); margin: 0 0 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1 1 220px; min-width: 0; }
+  input[type=text], input[type=number] {
+    font: inherit;
+    color: var(--text);
+    background: var(--field);
+    border: 1px solid var(--field-line);
+    border-radius: 6px;
+    padding: 6px 8px;
+    width: 100%;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  input[type=number] { width: 90px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input:disabled { opacity: .6; }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--field);
+    border: 1px solid var(--field-line);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.link {
+    border: none;
+    background: none;
+    color: var(--accent);
+    padding: 0;
+  }
+  .message { margin-top: 10px; padding: 8px 10px; border-radius: 6px; -webkit-user-select: text; user-select: text; }
+  .message.note { background: var(--note-bg); }
+  .message.error { background: var(--error-bg); color: var(--bad); }
+  .message.busy { color: var(--muted); padding-left: 0; }
+  .hint.invalid { color: var(--bad); }
+  .signed { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: var(--note-bg); color: var(--ok); }
+  .badge.bad { background: var(--error-bg); color: var(--bad); }
+  ul.flavors { list-style: none; margin: 0 0 10px; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
+  ul.flavors li { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; }
+  ul.flavors li + li { border-top: 1px solid var(--line); }
+  ul.flavors input { margin: 2px 0 0; }
+  ul.flavors .path { color: var(--muted); font-size: 12px; word-break: break-all; }
+  ul.flavors .empty { color: var(--muted); }
+  label.check { display: flex; gap: 8px; align-items: center; }
+  .spacer { flex: 1; }
+  footer { display: flex; gap: 16px; justify-content: flex-end; margin-top: 4px; }
+  [hidden] { display: none !important; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px;
+    border: 2px solid var(--muted); border-right-color: transparent; border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>T3 WoW <span class="version" id="version"></span></h1>
+    <div class="status"><span class="dot" id="status-dot"></span><span id="status"></span></div>
+  </div>
+</header>
+
+<section>
+  <h2>T3 Code environment</h2>
+  <p class="hint">In T3 Code, open Settings › Connections, open the environment's menu and choose
+    <b>Copy MCP URL</b>. T3 Connect, Tailscale and LAN addresses all work.</p>
+  <div class="row">
+    <input class="grow" type="text" id="url" placeholder="https://environment-address/mcp" spellcheck="false" autocomplete="off">
+    <button class="primary" id="sign-in">Sign in</button>
+  </div>
+  <div id="signing-in" class="message busy" hidden>
+    <span class="spinner"></span>Approve the bridge in your browser: enter a pairing code from the host
+    (Settings › Connections) and choose <b>Supervised</b> or higher to send messages from the game.
+    <div class="row" style="margin-top:8px">
+      <button id="open-sign-in" hidden>Open the page again</button>
+      <button id="cancel-sign-in">Cancel</button>
+    </div>
+  </div>
+  <div class="signed" id="signed" hidden>
+    <span class="badge" id="sign-in-badge"></span>
+    <span id="sign-in-detail" class="hint" style="margin:0"></span>
+    <span class="spacer"></span>
+    <button class="link" id="sign-out">Sign out</button>
+  </div>
+  <div id="env-note" class="message note" hidden></div>
+  <div id="env-error" class="message error" hidden></div>
+</section>
+
+<section>
+  <h2>World of Warcraft</h2>
+  <p class="hint">The addon goes into each game folder you tick. Restart the game after a change.</p>
+  <ul class="flavors" id="flavors"></ul>
+  <div class="row">
+    <button id="add-wow">Add World of Warcraft folder…</button>
+    <button class="link" id="look-again">Look again</button>
+  </div>
+  <div id="wow-busy" class="message busy" hidden></div>
+  <div id="wow-running" class="message busy" hidden>World of Warcraft is running: close it to change the addon.</div>
+  <div id="wow-note" class="message note" hidden></div>
+  <div id="wow-error" class="message error" hidden></div>
+</section>
+
+<section>
+  <h2>Live updates</h2>
+  <p class="hint">How many times per game session the addon can pick up new data without reloading the UI.
+    When they run out, <b>Sync</b> reloads the UI once and starts over.
+    <span id="slots-platform"></span></p>
+  <div class="row">
+    <input type="number" id="slots" min="0" step="10">
+    <button id="save-slots" disabled>Apply</button>
+    <span class="hint" id="slots-range" style="margin:0"></span>
+  </div>
+</section>
+
+<section>
+  <h2>Updates</h2>
+  <div class="row">
+    <label class="check grow"><input type="checkbox" id="auto-update"> Install updates automatically (while the game is closed)</label>
+    <button id="check-updates"></button>
+  </div>
+</section>
+
+<footer>
+  <button class="link" id="open-log">Open log</button>
+  <button class="link" id="help">Help</button>
+</footer>
+
+<script>
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const send = (cmd, extra) => window.ipc.postMessage(JSON.stringify(Object.assign({ cmd }, extra || {})));
+  let state = null;
+  // Fields the user is typing in are not overwritten by updates.
+  let urlEdited = false;
+  let slotsEdited = false;
+
+  function show(id, text) {
+    const element = $(id);
+    element.hidden = !text;
+    if (text) element.textContent = text;
+  }
+
+  function busyText(id, text) {
+    const element = $(id);
+    element.hidden = !text;
+    element.replaceChildren();
+    if (text) {
+      const spinner = document.createElement('span');
+      spinner.className = 'spinner';
+      element.append(spinner, text);
+    }
+  }
+
+  function renderFlavors(wow) {
+    const list = $('flavors');
+    list.replaceChildren();
+    const locked = !!wow.busy || wow.running;
+    if (!wow.flavors.length) {
+      const item = document.createElement('li');
+      item.className = 'empty';
+      item.textContent = wow.looked
+        ? 'World of Warcraft was not found in the usual places. Add its folder below.'
+        : 'Looking for World of Warcraft…';
+      list.append(item);
+      return;
+    }
+    for (const flavor of wow.flavors) {
+      const item = document.createElement('li');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = flavor.installed;
+      box.disabled = locked || flavor.linked;
+      box.addEventListener('change', () => send('setFlavor', { path: flavor.path, on: box.checked }));
+      const text = document.createElement('div');
+      text.className = 'grow';
+      const title = document.createElement('div');
+      let detail = flavor.installed ? `installed, ${flavor.slots} live updates` : 'not installed';
+      if (flavor.linked) detail = 'linked to a development checkout';
+      title.textContent = `${flavor.label} — ${detail}`;
+      const path = document.createElement('div');
+      path.className = 'path';
+      path.textContent = flavor.root;
+      text.append(title, path);
+      const reveal = document.createElement('button');
+      reveal.className = 'link';
+      reveal.textContent = 'Show';
+      reveal.addEventListener('click', () => send('showFolder', { path: flavor.path }));
+      item.append(box, text, reveal);
+      list.append(item);
+    }
+  }
+
+  window.render = function (next) {
+    state = next;
+    $('version').textContent = next.version;
+    $('status').textContent = next.status.text;
+    $('status-dot').classList.toggle('attention', next.status.attention);
+
+    const env = next.env;
+    if (!urlEdited || env.signingIn) $('url').value = env.url || '';
+    $('url').disabled = env.signingIn;
+    $('sign-in').disabled = env.signingIn;
+    $('sign-in').textContent = env.signIn === 'yes' ? 'Sign in again' : 'Sign in';
+    $('signing-in').hidden = !env.signingIn;
+    $('open-sign-in').hidden = !env.authUrl;
+    $('signed').hidden = env.signingIn || !env.url || env.signIn === 'no';
+    const badge = $('sign-in-badge');
+    badge.textContent = env.signIn === 'yes' ? 'Signed in' : 'Sign-in expired';
+    badge.classList.toggle('bad', env.signIn !== 'yes');
+    $('sign-in-detail').textContent =
+      env.signIn === 'yes' && env.daysLeft !== null ? `${env.daysLeft} days left` : '';
+    $('sign-out').hidden = env.signIn !== 'yes';
+    show('env-note', env.signingIn ? '' : env.note);
+    show('env-error', env.error);
+
+    const wow = next.wow;
+    renderFlavors(wow);
+    $('add-wow').disabled = !!wow.busy || wow.running;
+    $('look-again').disabled = !!wow.busy;
+    busyText('wow-busy', wow.busy);
+    $('wow-running').hidden = !wow.running || !!wow.busy;
+    show('wow-note', wow.note);
+    show('wow-error', wow.error);
+
+    if (!slotsEdited) $('slots').value = next.slots;
+    $('slots').max = next.slotsMax;
+    $('slots').disabled = !!wow.busy || wow.running;
+    if (!slotsEdited) showSlotsRange();
+    $('save-slots').disabled = !slotsEdited || typedSlots() === null || !!wow.busy || wow.running;
+    $('slots-platform').textContent = next.platform === 'windows'
+      ? 'Each one is a copy of the data the bridge rewrites, so very high numbers make updates slower.'
+      : 'They all share one file, so a high number costs nothing.';
+
+    $('auto-update').checked = next.update.auto;
+    $('check-updates').textContent = next.update.text;
+    $('check-updates').disabled = !next.update.enabled;
+  };
+
+  function showSlotsRange(problem) {
+    const range = $('slots-range');
+    range.classList.toggle('invalid', !!problem);
+    range.textContent = problem || (state ? `0 to ${state.slotsMax}, now ${state.slots}` : '');
+  }
+
+  // The number typed, or null when it is not a whole number in range.
+  function typedSlots() {
+    const text = $('slots').value.trim();
+    const slots = Number(text);
+    return text !== '' && Number.isInteger(slots) && slots >= 0 && slots <= state.slotsMax ? slots : null;
+  }
+
+  $('url').addEventListener('input', () => { urlEdited = true; });
+  $('url').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') $('sign-in').click();
+  });
+  $('sign-in').addEventListener('click', () => {
+    urlEdited = false;
+    send('signIn', { url: $('url').value });
+  });
+  $('cancel-sign-in').addEventListener('click', () => send('cancelSignIn'));
+  $('open-sign-in').addEventListener('click', () => send('openSignIn'));
+  $('sign-out').addEventListener('click', () => send('signOut'));
+  $('add-wow').addEventListener('click', () => send('addWow'));
+  $('look-again').addEventListener('click', () => send('lookForWow'));
+  $('slots').addEventListener('input', () => {
+    slotsEdited = true;
+    const valid = state && typedSlots() !== null;
+    showSlotsRange(valid || !state ? '' : `Enter a whole number from 0 to ${state.slotsMax}.`);
+    $('save-slots').disabled = !valid || !!state.wow.busy || state.wow.running;
+  });
+  $('slots').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !$('save-slots').disabled) $('save-slots').click();
+  });
+  $('save-slots').addEventListener('click', () => {
+    const slots = typedSlots();
+    if (slots === null) return;
+    slotsEdited = false;
+    send('setSlots', { slots });
+  });
+  $('auto-update').addEventListener('change', () => send('setAutoUpdate', { on: $('auto-update').checked }));
+  $('check-updates').addEventListener('click', () => send('checkForUpdates'));
+  $('open-log').addEventListener('click', () => send('openLog'));
+  $('help').addEventListener('click', () => send('openHelp'));
+  document.addEventListener('contextmenu', (event) => {
+    if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
+  });
+  send('ready');
+</script>
+</body>
+</html>
