@@ -57,6 +57,7 @@ fn applies_new_settings_while_the_game_runs() {
                 report: Some(&report),
             })
         });
+        let _stop = support::StopOnDrop(&stop);
 
         wait_for("the bridge to ask for setup", || {
             states.lock().unwrap().iter().any(|s| matches!(s, RunState::Setup(_))).then_some(())

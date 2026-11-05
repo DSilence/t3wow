@@ -64,6 +64,7 @@ fn syncs_only_while_the_game_runs() {
                 report: Some(&report),
             })
         });
+        let _stop = support::StopOnDrop(&stop);
 
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(calls(), 0, "nothing happens while the game is closed");

@@ -102,6 +102,7 @@ fn bridge_end_to_end() {
             let load = || Ok(config.clone());
             run_bridge(&RunOptions { load_config: &load, game_running: None, stop: &stop, report: None })
         });
+        let _stop = support::StopOnDrop(&stop);
 
         // Delivers queued messages once and publishes the reply with acks.
         let inbox = wait_for("an inbox with the acknowledgement", || {
