@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Drive a remote T3 Code environment from inside World of Warcraft"
 license = "MIT"
+repository = "https://github.com/DSilence/t3wow"
 publish = false
 
 [[bin]]

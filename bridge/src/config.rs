@@ -33,6 +33,8 @@ pub struct BridgeConfig {
     pub messages_per_thread: usize,
     /// Characters kept per message in the snapshot.
     pub max_chars_per_message: usize,
+    /// The tray app installs new releases on its own (while the game is closed).
+    pub auto_update: bool,
 }
 
 impl Default for BridgeConfig {
@@ -50,6 +52,7 @@ impl Default for BridgeConfig {
             recent_threads_with_messages: 4,
             messages_per_thread: 30,
             max_chars_per_message: 6_000,
+            auto_update: true,
         }
     }
 }

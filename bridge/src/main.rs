@@ -8,7 +8,7 @@ use t3wow::error::{Error, Result};
 use t3wow::lock::BridgeLock;
 use t3wow::run::{RunOptions, run_bridge};
 use t3wow::t3::T3Client;
-use t3wow::{app, oauth, service, url, watch, wow};
+use t3wow::{app, oauth, service, update, url, watch, wow};
 
 fn usage() -> String {
     format!(
@@ -22,6 +22,7 @@ Usage:
   t3wow tray                               Run the bridge from the menu bar / notification area
   t3wow app install|uninstall|open         The \"T3 WoW\" app that starts the tray (macOS, Windows)
   t3wow run [--wait-for-wow]               Run the bridge in this terminal instead
+  t3wow update [--check]                   Install the latest release (the tray app does this itself)
   t3wow status                             Show configuration and sign-in state
   t3wow logout                             Forget the T3 sign-in
   t3wow uninstall                          Remove the addon, its data addons and the app
@@ -43,6 +44,7 @@ struct Args {
     copy_slots: bool,
     no_browser: bool,
     wait_for_wow: bool,
+    check: bool,
     help: bool,
 }
 
@@ -65,6 +67,7 @@ fn parse_args() -> Result<Args> {
             "--copy-slots" => args.copy_slots = true,
             "--no-browser" => args.no_browser = true,
             "--wait-for-wow" => args.wait_for_wow = true,
+            "--check" => args.check = true,
             "-h" | "--help" => args.help = true,
             "-V" | "--version" => args.positionals.insert(0, "version".into()),
             flag if flag.starts_with('-') => return Err(Error::other(format!("Unknown option {flag}"))),
@@ -242,6 +245,10 @@ fn status() -> Result<()> {
         }
     );
     println!("Running:       {}", if BridgeLock::held() { "yes" } else { "no" });
+    println!(
+        "Updates:       {}",
+        if config.auto_update { "installed by the tray app" } else { "off (autoUpdate in config.json)" }
+    );
     if service::legacy_installed() {
         println!("Old service:   still installed; `t3wow app install` removes it");
     }
@@ -321,6 +328,28 @@ fn app_command(action: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn update(args: &Args) -> Result<()> {
+    println!("t3wow {BRIDGE_VERSION}: checking for updates...");
+    let Some(release) = update::check(&update::latest_release_url(), BRIDGE_VERSION)? else {
+        println!("This is the latest version.");
+        return Ok(());
+    };
+    println!("Version {} is available.", release.version);
+    if args.check {
+        return Ok(());
+    }
+    if watch::wow_running() {
+        return Err(Error::other("Close World of Warcraft first: the update replaces the addon."));
+    }
+    let file = update::download(&release, &update::download_dir())?;
+    print!("{}", update::install(&file)?);
+    println!("Updated to {}.", release.version);
+    if BridgeLock::held() {
+        println!("The running bridge still uses the old version: quit T3 WoW from its menu and open it again.");
+    }
+    Ok(())
+}
+
 fn setup(args: &Args) -> Result<()> {
     let config = load_config()?;
     let url = args.positionals.get(1).map(String::as_str);
@@ -342,6 +371,7 @@ fn setup(args: &Args) -> Result<()> {
 }
 
 fn main_inner() -> Result<()> {
+    update::clean_up();
     let args = parse_args()?;
     let mut command = if args.help { Some("help") } else { args.positionals.first().map(String::as_str) };
     // Opened as "T3 WoW.app": Finder passes no command.
@@ -360,6 +390,9 @@ fn main_inner() -> Result<()> {
             _ => Err(Error::other("The login service is gone; use the tray app: `t3wow app install`.")),
         },
         Some("status") => status(),
+        Some("update") => update(&args),
+        // Run by the new binary after `update` swapped it in.
+        Some("post-update") => update::post_update(),
         Some("logout") => {
             let config = load_config()?;
             if let Some(server_url) = &config.server_url {

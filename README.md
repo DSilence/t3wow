@@ -37,12 +37,34 @@ channel off if you prefer reloads.
 - **The T3 environment must run T3 Code 0.0.46 or newer** (currently
   nightly). The bridge uses the environment's MCP endpoint for outside
   agents (`/mcp` with OAuth sign-in), which is not in 0.0.45.
-- The `t3wow` binary on the computer that runs WoW. Until there are release
-  builds, build it with [Rust](https://rustup.rs):
-  `cargo build --release --manifest-path bridge/Cargo.toml`, which produces
-  `bridge/target/release/t3wow`.
+- The `t3wow` binary on the computer that runs WoW (see below).
 - WoW Retail or Classic (TOC lists 1.60.1 / 16001 and current retail and
   classic versions).
+
+## Download
+
+Get `t3wow` for your computer from the
+[latest release](https://github.com/DSilence/t3wow/releases/latest). It is a
+single file; `setup` copies it into the app, so the download can go afterwards.
+
+```sh
+# macOS (Apple silicon; use t3wow-x86_64-apple-darwin on Intel)
+curl -fLo t3wow https://github.com/DSilence/t3wow/releases/latest/download/t3wow-aarch64-apple-darwin
+chmod +x t3wow
+
+# Linux (x86_64; t3wow-aarch64-unknown-linux-gnu on ARM)
+curl -fLo ~/.local/bin/t3wow https://github.com/DSilence/t3wow/releases/latest/download/t3wow-x86_64-unknown-linux-gnu
+chmod +x ~/.local/bin/t3wow
+```
+
+```powershell
+# Windows (PowerShell)
+Invoke-WebRequest https://github.com/DSilence/t3wow/releases/latest/download/t3wow-x86_64-pc-windows-msvc.exe -OutFile t3wow.exe
+```
+
+Each release lists checksums in `SHA256SUMS`. To build it yourself instead,
+use [Rust](https://rustup.rs): `cargo build --release --manifest-path
+bridge/Cargo.toml` produces `bridge/target/release/t3wow`.
 
 ## Setup
 
@@ -86,6 +108,18 @@ Earlier versions installed a login service instead. `t3wow app install` (and
 On macOS, if WoW lives on an external drive, the app may need access to it:
 allow **T3 WoW** under **System Settings > Privacy & Security > Files and
 Folders** (or **Full Disk Access**) if the log shows "cannot write".
+
+### Updates
+
+The tray app keeps itself up to date: shortly after it starts, and every six
+hours after that, it checks for a new release. It downloads it, checks it
+against the release's `SHA256SUMS`, and installs it once World of Warcraft is
+closed (the addon is updated too), then restarts. **Check for updates** in its
+menu checks right away. Set `"autoUpdate": false` in `~/.t3wow/config.json` to
+only update when you ask from the menu.
+
+From a terminal (and on Linux): `t3wow update` installs the latest release
+(close the game first), `t3wow update --check` only looks.
 
 In game: `/t3` opens the window. You can also bind a key under
 Key Bindings > AddOns.
@@ -158,6 +192,7 @@ each time the game starts):
 | `messagesPerThread`         | 30      | Messages kept per thread                             |
 | `maxCharsPerMessage`        | 6000    | Longer messages are shortened (open T3 for the rest) |
 | `oauthPort`                 | 47823   | Loopback port for the sign-in redirect               |
+| `autoUpdate`                | true    | The tray app installs new releases on its own        |
 
 The sign-in token is stored in `~/.t3wow/auth.json` (mode 600). Set
 `T3WOW_HOME` to use another directory.
@@ -185,6 +220,28 @@ To type-check the Linux and Windows code paths from macOS without a C
 cross-compiler, leave out TLS (its crypto library needs one):
 `cargo clippy --no-default-features --target x86_64-pc-windows-gnu`.
 
+### Releasing
+
+CI (`.github/workflows/ci.yml`) runs the bridge tests on macOS, Linux and
+Windows and the addon tests on every push and pull request.
+
+To publish a release, run the **Release** workflow from the Actions tab with
+a version, or:
+
+```sh
+gh workflow run release.yml -f version=0.2.0
+```
+
+It bumps the version in `bridge/Cargo.toml`, `Cargo.lock` and `package.json`,
+commits and tags `v0.2.0` on the default branch, builds the bridge for macOS
+(Apple silicon and Intel), Windows and Linux (x86_64 and ARM), and publishes a
+GitHub release with those binaries and `SHA256SUMS`. Pushing a `vX.Y.Z` tag
+that matches `bridge/Cargo.toml` releases that commit instead. Installed tray
+apps pick the release up within six hours.
+
+The asset names (`t3wow-<target>[.exe]`) are what the updater looks for
+(`bridge/src/update.rs`), so keep the two in sync.
+
 ## Limitations
 
 - Sending by screenshot briefly shows a colored grid in the top-left corner
@@ -205,3 +262,7 @@ cross-compiler, leave out TLS (its crypto library needs one):
 - Live updates via load-on-demand addons need to be verified in each game
   client. If a client caches addon files, updates still arrive with
   Sync/`/reload`.
+
+## License
+
+[MIT](LICENSE). Not affiliated with Blizzard Entertainment or T3 Code.

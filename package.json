@@ -20,5 +20,11 @@
     "fengari": "^0.1.5",
     "luaparse": "^0.3.1",
     "typescript": "^7.0.2"
+  },
+  "packageManager": "pnpm@12.16.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DSilence/t3wow.git"
   }
 }

@@ -19,6 +19,7 @@ pub mod sync;
 pub mod t3;
 #[cfg(any(target_os = "macos", windows))]
 pub mod tray;
+pub mod update;
 pub mod url;
 pub mod watch;
 pub mod wow;

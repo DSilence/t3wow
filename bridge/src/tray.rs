@@ -1,6 +1,7 @@
 //! The tray app: a menu bar (macOS) or notification area (Windows) icon that
 //! runs the bridge while it is open. The bridge idles until World of Warcraft
-//! starts, syncs while it runs, and stops when you quit the app.
+//! starts, syncs while it runs, and stops when you quit the app. It also
+//! installs new releases between game sessions (see `update.rs`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,9 +18,17 @@ use crate::lock::BridgeLock;
 use crate::log;
 use crate::run::{RunOptions, RunState, run_bridge};
 use crate::service;
+use crate::update;
 use crate::watch::wow_running;
 
 static STOP: AtomicBool = AtomicBool::new(false);
+/// "Check for updates" was clicked.
+static CHECK_NOW: AtomicBool = AtomicBool::new(false);
+/// An update is installed: start the new version and quit.
+static RESTART: AtomicBool = AtomicBool::new(false);
+
+const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(20);
+const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq)]
 enum TrayState {
@@ -27,6 +36,18 @@ enum TrayState {
     Run(RunState),
     /// Another bridge holds the lock, or the bridge stopped with an error.
     Blocked(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Downloading(String),
+    /// Downloaded; installs once World of Warcraft is closed.
+    Ready(String),
+    Installing(String),
+    Failed(String),
 }
 
 enum UserEvent {
@@ -59,6 +80,90 @@ fn describe(state: &TrayState) -> String {
                 text.push_str(" (read only)");
             }
             text
+        }
+    }
+}
+
+/// The update menu item's text, and whether clicking it checks for updates.
+fn describe_update(state: &UpdateState) -> (String, bool) {
+    match state {
+        UpdateState::Idle => ("Check for updates".into(), true),
+        UpdateState::Checking => ("Checking for updates…".into(), false),
+        UpdateState::UpToDate => ("Up to date (check again)".into(), true),
+        UpdateState::Downloading(version) => (format!("Downloading {version}…"), false),
+        UpdateState::Ready(version) => (format!("Update {version} installs when WoW closes"), false),
+        UpdateState::Installing(version) => (format!("Installing {version}…"), false),
+        UpdateState::Failed(message) => (format!("Update failed: {} (retry)", shorten(message, 40)), true),
+    }
+}
+
+fn sleep_unless_stopped(duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while !STOP.load(Ordering::Relaxed) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Checks for a new release now and then (when `autoUpdate` is on) and when
+/// asked from the menu, downloads it, and installs it once the game is closed
+/// and the bridge idle, since the addon is replaced too. Then asks the event
+/// loop to restart the app.
+fn run_updater(update: Arc<Mutex<UpdateState>>, bridge: Arc<Mutex<TrayState>>) {
+    let set = |state: UpdateState| *update.lock().unwrap() = state;
+    let mut next_check = Instant::now() + FIRST_UPDATE_CHECK;
+    while !STOP.load(Ordering::Relaxed) {
+        let manual = CHECK_NOW.swap(false, Ordering::Relaxed);
+        let automatic = load_config().map(|config| config.auto_update).unwrap_or(true);
+        if !manual && !(automatic && Instant::now() >= next_check) {
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        next_check = Instant::now() + UPDATE_INTERVAL;
+        set(UpdateState::Checking);
+        let release = match update::check(&update::latest_release_url(), BRIDGE_VERSION) {
+            Ok(Some(release)) => release,
+            Ok(None) => {
+                set(UpdateState::UpToDate);
+                continue;
+            }
+            Err(error) => {
+                log!("update check failed: {error}");
+                // Being offline now and then is no news; say so only when asked.
+                set(if manual { UpdateState::Failed(error.to_string()) } else { UpdateState::Idle });
+                continue;
+            }
+        };
+        let version = release.version.clone();
+        log!("downloading version {version}");
+        set(UpdateState::Downloading(version.clone()));
+        let file = match update::download(&release, &update::download_dir()) {
+            Ok(file) => file,
+            Err(error) => {
+                log!("update download failed: {error}");
+                set(UpdateState::Failed(error.to_string()));
+                continue;
+            }
+        };
+        set(UpdateState::Ready(version.clone()));
+        let busy = || wow_running() || matches!(*bridge.lock().unwrap(), TrayState::Run(RunState::Syncing { .. }));
+        while busy() && !STOP.load(Ordering::Relaxed) {
+            sleep_unless_stopped(Duration::from_secs(3));
+        }
+        if STOP.load(Ordering::Relaxed) {
+            return;
+        }
+        log!("installing version {version}");
+        set(UpdateState::Installing(version.clone()));
+        match update::install(&file) {
+            Ok(output) => {
+                log!("updated to {version}: {}", output.trim().replace('\n', "; "));
+                RESTART.store(true, Ordering::Relaxed);
+                return;
+            }
+            Err(error) => {
+                log!("update failed: {error}");
+                set(UpdateState::Failed(error.to_string()));
+            }
         }
     }
 }
@@ -177,7 +282,16 @@ fn detach_console() {
 
 /// Start the bridge on a background thread. It holds the lock while it runs.
 fn start_bridge(state: Arc<Mutex<TrayState>>) -> Option<std::thread::JoinHandle<()>> {
-    let lock = match BridgeLock::acquire() {
+    // Right after an update the old app may still be letting go of the lock.
+    let mut attempt = BridgeLock::acquire();
+    for _ in 0..20 {
+        if attempt.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        attempt = BridgeLock::acquire();
+    }
+    let lock = match attempt {
         Ok(lock) => lock,
         Err(error) => {
             log!("{error}");
@@ -199,6 +313,17 @@ fn start_bridge(state: Arc<Mutex<TrayState>>) -> Option<std::thread::JoinHandle<
     }))
 }
 
+/// Stop the bridge thread, giving it a moment to finish; do not wait on a slow request.
+fn stop_bridge(bridge: &mut Option<std::thread::JoinHandle<()>>) {
+    STOP.store(true, Ordering::Relaxed);
+    if let Some(handle) = bridge.take() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !handle.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
 pub fn run_tray() -> Result<()> {
     #[cfg(windows)]
     detach_console();
@@ -215,6 +340,12 @@ pub fn run_tray() -> Result<()> {
     } else {
         start_bridge(state.clone())
     };
+    let exe = std::env::current_exe()?;
+    let update_state = Arc::new(Mutex::new(UpdateState::Idle));
+    {
+        let (update_state, state) = (update_state.clone(), state.clone());
+        std::thread::spawn(move || run_updater(update_state, state));
+    }
 
     #[allow(unused_mut)]
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -232,11 +363,14 @@ pub fn run_tray() -> Result<()> {
     let heading = MenuItem::new(format!("T3 WoW bridge {BRIDGE_VERSION}"), false, None);
     let status = MenuItem::new(describe(&TrayState::Starting), false, None);
     let open_log = MenuItem::new("Open log", true, None);
+    let (update_text, update_enabled) = describe_update(&UpdateState::Idle);
+    let update_item = MenuItem::new(update_text, update_enabled, None);
     let quit = MenuItem::new("Quit T3 WoW", true, None);
     menu.append_items(&[
         &heading,
         &status,
         &PredefinedMenuItem::separator(),
+        &update_item,
         &open_log,
         &PredefinedMenuItem::separator(),
         &quit,
@@ -246,6 +380,7 @@ pub fn run_tray() -> Result<()> {
     let mut tray: Option<TrayIcon> = None;
     let mut menu = Some(menu);
     let mut shown: Option<TrayState> = None;
+    let mut shown_update = UpdateState::Idle;
     event_loop.run(move |event, _, flow| {
         *flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
         match event {
@@ -270,14 +405,7 @@ pub fn run_tray() -> Result<()> {
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id == *quit.id() {
                     log!("quitting");
-                    STOP.store(true, Ordering::Relaxed);
-                    // The bridge notices within a moment; do not wait on a slow request.
-                    if let Some(handle) = bridge.take() {
-                        let deadline = Instant::now() + Duration::from_secs(3);
-                        while !handle.is_finished() && Instant::now() < deadline {
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                    }
+                    stop_bridge(&mut bridge);
                     tray.take();
                     *flow = ControlFlow::Exit;
                     return;
@@ -285,8 +413,28 @@ pub fn run_tray() -> Result<()> {
                 if event.id == *open_log.id() {
                     open_file(&service::log_file());
                 }
+                if event.id == *update_item.id() {
+                    CHECK_NOW.store(true, Ordering::Relaxed);
+                }
             }
             _ => {}
+        }
+        if RESTART.load(Ordering::Relaxed) {
+            log!("restarting with the new version");
+            stop_bridge(&mut bridge);
+            if let Err(error) = update::relaunch(&exe) {
+                log!("could not start the new version: {error}");
+            }
+            tray.take();
+            *flow = ControlFlow::Exit;
+            return;
+        }
+        let current_update = update_state.lock().unwrap().clone();
+        if current_update != shown_update {
+            let (text, enabled) = describe_update(&current_update);
+            update_item.set_text(&text);
+            update_item.set_enabled(enabled);
+            shown_update = current_update;
         }
         let current = state.lock().unwrap().clone();
         if shown.as_ref() != Some(&current) {
@@ -317,6 +465,15 @@ mod tests {
         assert_eq!(describe(&TrayState::Run(RunState::Waiting)), "Waiting for World of Warcraft");
         let long = TrayState::Run(RunState::Error("x".repeat(200)));
         assert!(describe(&long).chars().count() < 80);
+    }
+
+    #[test]
+    fn describes_updates() {
+        assert_eq!(describe_update(&UpdateState::Idle), ("Check for updates".into(), true));
+        let (text, enabled) = describe_update(&UpdateState::Ready("0.2.0".into()));
+        assert_eq!(text, "Update 0.2.0 installs when WoW closes");
+        assert!(!enabled);
+        assert!(describe_update(&UpdateState::Failed("x".repeat(200))).0.chars().count() < 70);
     }
 
     fn alpha(shape: Shape, x: usize, y: usize) -> u8 {

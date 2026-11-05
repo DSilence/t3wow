@@ -295,6 +295,11 @@ pub fn data_chunk(lua_table: &str, source: &str) -> String {
     )
 }
 
+/// Whether the addon folder links to a checkout (`install --link`).
+pub fn addon_linked(flavor_dir: &Path) -> bool {
+    is_symlink(&addons_dir(flavor_dir).join(ADDON_NAME))
+}
+
 /// Whether this flavor's live slots link to the shared file (one write per update).
 pub fn slots_linked(flavor_dir: &Path) -> bool {
     is_symlink(&addons_dir(flavor_dir).join(live_slot_name(1)).join("Data.lua"))

@@ -126,7 +126,7 @@ pub fn open() -> Result<()> {
 }
 
 #[cfg(windows)]
-fn installed_binary() -> PathBuf {
+pub fn installed_binary() -> PathBuf {
     let local =
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| user_home().join("AppData/Local"));
     local.join("t3wow").join("t3wow.exe")
@@ -138,9 +138,8 @@ pub fn install() -> Result<PathBuf> {
     fs::create_dir_all(exe.parent().unwrap())?;
     let current = std::env::current_exe()?;
     if current.canonicalize().ok() != exe.canonicalize().ok() {
-        let tmp = exe.with_extension("new");
-        fs::copy(&current, &tmp)?;
-        fs::rename(&tmp, &exe)?;
+        // The tray app may be running from it.
+        crate::update::replace_file(&exe, &current)?;
     }
     let ico = exe.with_extension("ico");
     fs::write(&ico, ICO)?;
