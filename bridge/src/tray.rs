@@ -285,13 +285,10 @@ fn icon_pixels(shape: Shape) -> Vec<u8> {
     rgba
 }
 
+/// Open a file in its default app (on Windows through the shell, not by
+/// starting a program ourselves).
 fn open_file(path: &std::path::Path) {
-    let mut command = if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-    } else {
-        std::process::Command::new("notepad")
-    };
-    let _ = command.arg(path).spawn();
+    crate::app::open_external(&path.to_string_lossy());
 }
 
 /// The bridge lock, waiting a little: right after an update or a restart the

@@ -69,19 +69,28 @@ fn process_names() -> Vec<String> {
         .collect()
 }
 
+/// Read the process list directly: polling `tasklist` from a hidden window
+/// is what antivirus heuristics expect from malware doing reconnaissance.
 #[cfg(windows)]
 fn process_names() -> Vec<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let Ok(output) =
-        std::process::Command::new("tasklist").args(["/FO", "CSV", "/NH"]).creation_flags(CREATE_NO_WINDOW).output()
-    else {
-        return Vec::new();
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.strip_prefix('"')?.split('"').next().map(String::from))
-        .collect()
+
+    let mut names = Vec::new();
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return names;
+    };
+    let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while more {
+        let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+        names.push(String::from_utf16_lossy(&entry.szExeFile[..len]));
+        more = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    let _ = unsafe { CloseHandle(snapshot) };
+    names
 }
 
 #[cfg(test)]
