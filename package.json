@@ -1,6 +1,6 @@
 {
   "name": "t3wow",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "T3 Code for World of Warcraft: the addon's tests and tooling (the bridge is the Rust crate in bridge/)",
   "type": "module",
