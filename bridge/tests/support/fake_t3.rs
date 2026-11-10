@@ -41,6 +41,8 @@ pub struct Thread {
     pub updated: u64,
     pub model_selection: Value,
     pub settled: bool,
+    /// Set for a subagent thread: T3 lists those unless `includeSubagents` is false.
+    pub parent_thread_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -67,6 +69,7 @@ impl State {
             updated: 0,
             model_selection: json!({ "instanceId": "claudeAgent", "model": "claude-opus-5-5" }),
             settled: false,
+            parent_thread_id: None,
         };
         self.threads.insert(thread_id.into(), thread);
         for (kind, text) in items {
@@ -105,7 +108,8 @@ impl State {
             "settled": t.settled,
             "settledAt": if t.settled { json!(iso(t.updated)) } else { Value::Null },
             "snoozed": false,
-            "parentThreadId": null,
+            "parentThreadId": t.parent_thread_id,
+            "relationshipToParent": t.parent_thread_id.as_ref().map(|_| "subagent"),
             "itemCount": t.items.len(),
             "createdAt": iso(0),
             "updatedAt": iso(t.updated),
@@ -130,6 +134,7 @@ impl State {
                     .values()
                     .filter(|t| args["projectId"] == t.project_id)
                     .filter(|t| args["settled"].as_bool().is_none_or(|settled| settled == t.settled))
+                    .filter(|t| args["includeSubagents"].as_bool() != Some(false) || t.parent_thread_id.is_none())
                     .map(Self::list_item)
                     .collect();
                 Ok(

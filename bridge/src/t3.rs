@@ -281,14 +281,18 @@ impl T3Client {
         Ok(projects)
     }
 
-    /// A project's threads, newest first: the active ones, or the settled ones.
+    /// A project's top-level threads, newest first: the active ones, or the settled ones.
+    ///
+    /// Subagent threads are left out, as in T3's sidebar: they live under their
+    /// parent, and are never settled themselves, so listing them would keep a
+    /// settled parent's children in the active list.
     pub fn list_threads(&mut self, project_id: &str, limit: usize, settled: bool) -> Result<Vec<ThreadListItem>> {
         #[derive(Deserialize)]
         struct Page {
             threads: Vec<ThreadListItem>,
         }
-        let page: Page =
-            self.call("t3_thread_list", json!({ "projectId": project_id, "settled": settled, "limit": limit }))?;
+        let args = json!({ "projectId": project_id, "settled": settled, "includeSubagents": false, "limit": limit });
+        let page: Page = self.call("t3_thread_list", args)?;
         Ok(page.threads)
     }
 

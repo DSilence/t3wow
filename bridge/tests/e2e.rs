@@ -220,7 +220,13 @@ fn bridge_end_to_end() {
             fs::read_dir(&shots_dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(left, ["WoWScrnShot_own.jpg"], "data screenshots are deleted, the player's own kept");
 
-        // Settling moves a thread to the project's settled list.
+        // Settling moves a thread to the project's settled list. Its subagents
+        // are never settled in T3, so they must not show up as active threads.
+        {
+            let mut state = t3.state.lock().unwrap();
+            state.add_thread("t1-sub", "p1", "Subagent of t1", &[("assistant_message", "sub done")]);
+            state.threads.get_mut("t1-sub").unwrap().parent_thread_id = Some("t1".into());
+        }
         fs::write(
             &sv_file,
             saved_variables(r#"{ ["seq"] = 11, ["kind"] = "settle", ["threadId"] = "t1", ["settled"] = true },"#),
@@ -239,6 +245,7 @@ fn bridge_end_to_end() {
             "(function() local ids = {} for _, t in ipairs(T3Wow.snapshot.projects[1].threads) do ids[#ids + 1] = t.id end return table.concat(ids, ',') end)()",
         );
         assert!(!active.split(',').any(|id| id == "t1"), "{active}");
+        assert!(!read(&inbox_file).contains("t1-sub"), "subagent threads are not listed");
         assert!(read(&inbox_file).contains("Echo: sent by screenshot"), "the open settled thread keeps its messages");
 
         // Searches come back with the acks; settled threads are not searched.
